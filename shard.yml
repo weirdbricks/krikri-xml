@@ -1,0 +1,13 @@
+name: krikri-xml
+version: 0.1.0
+
+description: |
+  Clean-room XML 1.0 (Fifth Edition) parser in pure Crystal.
+  No C dependencies - implemented directly from the W3C specification.
+
+authors:
+  - Krikri Contributors
+
+crystal: ">= 1.10.0"
+
+license: MIT
