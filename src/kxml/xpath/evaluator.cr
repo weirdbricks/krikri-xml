@@ -5,12 +5,14 @@ module KXML
     # Evaluator for XPath 1.0 expressions against a KXML DOM.
     class Evaluator
       @expr : Expr
+      @ns_map : Hash(String, String)?
 
-      def initialize(@expr : Expr)
+      def initialize(@expr : Expr, @ns_map = nil)
       end
 
-      def self.evaluate(expr : String, context : Node | Attribute, position : Int32 = 1, size : Int32 = 1) : Value
-        new(Parser.parse(expr)).eval(context, position, size)
+      def self.evaluate(expr : String, context : Node | Attribute, position : Int32 = 1, size : Int32 = 1,
+                        ns_map : Hash(String, String)? = nil) : Value
+        new(Parser.parse(expr), ns_map).eval(context, position, size)
       end
 
       def eval(context : Node | Attribute, position : Int32, size : Int32) : Value
@@ -309,6 +311,15 @@ module KXML
       # axis: the in-scope namespaces of the context node, where an
       # unprefixed name test uses the default namespace (or no namespace).
       private def resolve_test_uri(test : NameTest, ctx_node : Node | Attribute, principal : Bool) : String
+        # libxml2 mode (an explicit namespace map was passed): prefixes
+        # resolve exclusively from the map and unprefixed name tests match
+        # only no-namespace nodes (libxml2 XPath has no default-namespace
+        # concept).
+        if ns_map = @ns_map
+          return "" if principal || test.prefix == "*" || ctx_node.is_a?(Attribute)
+          return "" if test.prefix.nil?
+          return ns_map[test.prefix]? || ""
+        end
         # Unprefixed name tests use the in-scope default namespace - except
         # on the attribute axis, where unprefixed attributes have no
         # namespace regardless of the default.

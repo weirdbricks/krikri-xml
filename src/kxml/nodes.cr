@@ -50,8 +50,51 @@ module KXML
 
     abstract def to_xml(io : IO) : Nil
 
+    def to_xml(io : IO, pretty : Bool, depth : Int32, indent_size : Int32) : Nil
+      to_xml(io)
+    end
+
     def to_xml : String
       String.build { |io| to_xml(io) }
+    end
+
+    # Removes this node from its parent's child list (mutation API for
+    # consumers that edit documents in place; a no-op without a parent).
+    def unlink : Nil
+      if parent = parent_node
+        if parent.responds_to?(:children)
+          parent.children.reject!(&.same?(self))
+        end
+        self.parent_node = nil
+      end
+    end
+
+    # Moves *node* (removing it from any existing parent first) to just
+    # after this node among the parent's children - libxml2's
+    # xmlAddNextSibling move semantics.
+    def add_next_sibling(node : Node) : Node
+      parent = parent_node
+      raise Error.new("cannot add a sibling to a parentless node", 0, 0) unless parent.is_a?(Element)
+      node.unlink if node.parent_node
+      list = parent.children
+      index = list.index(&.same?(self)) || list.size - 1
+      node.parent_node = parent
+      list.insert(index + 1, node)
+      parent.document.try(&.allocate_order(node))
+      node
+    end
+
+    # Moves *node* to just before this node (xmlAddPrevSibling semantics).
+    def add_prev_sibling(node : Node) : Node
+      parent = parent_node
+      raise Error.new("cannot add a sibling to a parentless node", 0, 0) unless parent.is_a?(Element)
+      node.unlink if node.parent_node
+      list = parent.children
+      index = list.index(&.same?(self)) || 0
+      node.parent_node = parent
+      list.insert(index, node)
+      parent.document.try(&.allocate_order(node))
+      node
     end
   end
 
@@ -60,6 +103,54 @@ module KXML
     property doctype : DocumentType?
     getter misc_before = [] of Node
     getter misc_after = [] of Node
+
+    # Creates an element for *name* (a Clark-notation `{uri}local` or a
+    # plain/qualified name). When a namespace URI is involved and no
+    # in-scope binding exists on *context* (or its ancestors), the
+    # binding is declared on the new element itself using *prefix_hint*
+    # (or a generated `nsN`) - mirroring libxml2's
+    # xmlSearchNsByHref/xmlNewNs dance.
+    def create_element(name : String, context : Element? = nil, prefix_hint : String? = nil) : Element
+      href, local = Element.parse_clark(name)
+      if href
+        if context && (prefix = context.find_ns_prefix(href))
+          prefix, local_part = split_qname_for_creation(name, local, prefix)
+          Element.new("#{prefix}:#{local_part}", prefix, local_part, href, [] of Attribute)
+        else
+          hint = prefix_hint || "ns#{Element.next_clark_number}"
+          Element.new("#{hint}:#{local}", hint, local, href, [] of Attribute)
+            .tap { |e| e.attributes << Attribute.new("xmlns:#{hint}", "xmlns", hint, XMLNS_NAMESPACE_URI, href, true) }
+        end
+      elsif name.includes?(':')
+        prefix, local_part = name.split(':', 2)
+        uri = context.try(&.in_scope_namespaces[prefix]?)
+        Element.new(name, prefix, local_part, uri, [] of Attribute)
+      else
+        Element.new(name, nil, name, nil, [] of Attribute)
+      end
+    end
+
+    private def split_qname_for_creation(name : String, local : String, prefix : String) : {String, String}
+      {prefix, local}
+    end
+
+    def create_text(content : String) : Text
+      Text.new(content)
+    end
+
+    # Monotonic document order for mutation-created nodes.
+    def allocate_order(node : Node) : Int32
+      max = 0
+      stack = [self.as(Node)]
+      until stack.empty?
+        n = stack.pop
+        max = n.doc_order if n.doc_order > max
+        stack.concat(n.children) if n.is_a?(Element)
+      end
+      max += 1
+      node.doc_order = max
+      max
+    end
 
     def children : Array(Node)
       nodes = [] of Node
@@ -72,14 +163,29 @@ module KXML
     end
 
     def to_xml(io : IO) : Nil
-      misc_before.each &.to_xml(io)
+      to_xml(io, pretty: false)
+    end
+
+    def to_xml(pretty : Bool, indent_size : Int32 = 2) : String
+      String.build { |io| to_xml(io, pretty, indent_size) }
+    end
+
+    # *pretty* mirrors libxml2's XML::SaveOptions::FORMAT: elements whose
+    # children are all elements/comments/PIs get one child per line with
+    # *indent_size*-space indentation; text-bearing content is inline.
+    def to_xml(io : IO, pretty : Bool, indent_size : Int32 = 2) : Nil
+      body = String::Builder.new
+      misc_before.each &.to_xml(body, pretty, 0, indent_size)
       if d = doctype
-        d.to_xml(io)
+        d.to_xml(body)
+        body << "\n" if pretty
       end
       if r = root
-        r.to_xml(io)
+        r.to_xml(body, pretty, 0, indent_size)
       end
-      misc_after.each &.to_xml(io)
+      misc_after.each &.to_xml(body, pretty, 0, indent_size)
+      body << "\n" if pretty
+      io << body.to_s
     end
   end
 
@@ -103,8 +209,169 @@ module KXML
       attribute(name).try &.value
     end
 
+    def []?(name : String) : String?
+      self[name]
+    end
+
     def elements : Array(Element)
       children.select(Element)
+    end
+
+    # ------------------------------------------------------------------
+    # mutation API
+
+    # Appends *node* as the last child (moving it out of any existing
+    # parent first - libxml2's xmlAddChild move semantics).
+    def append_child(node : Node) : Node
+      node.unlink if node.parent_node
+      node.parent_node = self
+      children << node
+      document.try(&.allocate_order(node))
+      node
+    end
+
+    # Replaces the entire child list with a single text node - the
+    # element-content setter the real module's `node.text = value` uses.
+    def text=(value : String) : Nil
+      children.dup.each(&.unlink)
+      append_child(Text.new(value)) unless value.empty?
+    end
+
+    # Sets attribute *name* (Clark `{uri}local` or plain) to *value*,
+    # declaring the namespace on this element when no in-scope binding
+    # exists (xmlSetNsProp + xmlNewNs semantics).
+    def set_attribute(name : String, value : String) : Nil
+      href, local = Element.parse_clark(name)
+      if href
+        prefix = find_ns_prefix(href)
+        unless prefix
+          prefix = "ns#{Element.next_clark_number}"
+          attributes << Attribute.new("xmlns:#{prefix}", "xmlns", prefix, XMLNS_NAMESPACE_URI, href, true)
+        end
+        pos = attributes.index { |a| a.local_name == local && a.namespace_uri == href }
+        if pos
+          attributes[pos] = Attribute.new("#{prefix}:#{local}", prefix, local, href, value, true)
+        else
+          attributes << Attribute.new("#{prefix}:#{local}", prefix, local, href, value, true)
+        end
+      else
+        pos = attributes.index { |a| a.prefix.nil? && a.local_name == name }
+        if pos
+          attributes[pos] = Attribute.new(name, nil, name, nil, value, true)
+        else
+          attributes << Attribute.new(name, nil, name, nil, value, true)
+        end
+      end
+    end
+
+    # Removes attribute *name* (Clark or plain) when present.
+    def delete_attribute(name : String) : Nil
+      href, local = Element.parse_clark(name)
+      if href
+        attributes.reject! { |a| a.local_name == local && a.namespace_uri == href }
+      else
+        attributes.reject! { |a| a.prefix.nil? && a.local_name == name }
+      end
+    end
+
+    # Reads attribute *name* (Clark or plain).
+    def attribute_value(name : String) : String?
+      href, local = Element.parse_clark(name)
+      if href
+        attributes.find { |a| a.local_name == local && a.namespace_uri == href }.try(&.value)
+      else
+        self[local]?
+      end
+    end
+
+    # The prefix bound to *href* on this element or its nearest ancestor.
+    def find_ns_prefix(href : String) : String?
+      n : Node? = self
+      while n
+        if n.is_a?(Element)
+          n.attributes.each do |a|
+            if a.prefix == "xmlns"
+              return a.local_name if a.value == href
+            elsif a.prefix.nil? && a.local_name == "xmlns"
+              return "" if a.value == href
+            end
+          end
+        end
+        n = n.parent_node
+      end
+      nil
+    end
+
+    # In-scope namespace bindings (prefix -> href) from the nearest
+    # element upward; nearer bindings win.
+    def in_scope_namespaces : Hash(String, String)
+      chain = [] of Element
+      n : Node? = self
+      while n
+        chain << n if n.is_a?(Element)
+        n = n.parent_node
+      end
+      ns = Hash(String, String).new
+      chain.reverse_each do |element|
+        element.attributes.each do |a|
+          if a.prefix == "xmlns"
+            ns[a.local_name] = a.value
+          elsif a.prefix.nil? && a.local_name == "xmlns"
+            if !a.value.empty?
+              ns[""] = a.value
+            else
+              ns.delete("")
+            end
+          end
+        end
+      end
+      ns
+    end
+
+    # libxml2's xmlGetNodePath: /ancestor/local[n] with the [n] index
+    # counted among same-name siblings (omitted when unique); attributes
+    # append /@name.
+    def node_path : String
+      segments = [] of String
+      n : Node? = self
+      while n
+        case node = n
+        when Element
+          parent = node.parent_node
+          if parent.is_a?(Document)
+            segments.unshift("/#{node.name}")
+            n = nil
+            next
+          end
+          siblings = parent.as(Element).elements
+          same = siblings.count { |sibling| sibling.name == node.name }
+          pos = siblings.index(&.same?(node)).as(Int32)
+          segments.unshift(same > 1 ? "#{node.name}[#{pos + 1}]" : node.name)
+          n = parent
+        when Attribute
+          segments.unshift("@#{node.name}")
+          n = nil
+        else
+          n = node.parent_node
+        end
+      end
+      segments.join("/")
+    end
+
+    # Splits a Clark-notation name into {uri, local}; nil uri for plain
+    # names.
+    def self.parse_clark(name : String) : {String?, String}
+      if name.starts_with?('{') && (i = name.index('}'))
+        {name[1...i], name[(i + 1)..]}
+      else
+        {nil, name}
+      end
+    end
+
+    @@clark_counter = 0
+
+    def self.next_clark_number : Int32
+      @@clark_counter += 1
     end
 
     def text_content : String
@@ -125,17 +392,36 @@ module KXML
     end
 
     def to_xml(io : IO) : Nil
+      to_xml(io, pretty: false, depth: 0, indent_size: 2)
+    end
+
+    def to_xml(io : IO, pretty : Bool, depth : Int32, indent_size : Int32) : Nil
       io << '<' << name
       attributes.each do |a|
         io << ' ' << a.name << "=\"" << KXML.escape_attribute(a.value) << '"'
       end
       if children.empty?
         io << "/>"
-      else
-        io << '>'
-        children.each &.to_xml(io)
-        io << "</" << name << '>'
+        return
       end
+      # libxml2 FORMAT: a parent whose children are all elements,
+      # comments or PIs gets one child per line; any text/CDATA child
+      # keeps the whole child list inline.
+      format_children = pretty && children.all? do |child|
+        child.is_a?(Element) || child.is_a?(Comment) || child.is_a?(ProcessingInstruction)
+      end
+      io << '>'
+      if format_children
+        pad = " " * ((depth + 1) * indent_size)
+        children.each do |child|
+          io << "\n" << pad
+          child.to_xml(io, pretty, depth + 1, indent_size)
+        end
+        io << "\n" << (" " * (depth * indent_size))
+      else
+        children.each &.to_xml(io, pretty, depth + 1, indent_size)
+      end
+      io << "</" << name << '>'
     end
   end
 

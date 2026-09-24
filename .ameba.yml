@@ -8,6 +8,7 @@ Lint/NotNil:
   Excluded:
   - spec/conformance_spec.cr
   - spec/doctype_spec.cr
+  - spec/mutation_spec.cr
   - spec/entities_spec.cr
   - spec/namespaces_spec.cr
   - spec/normalization_spec.cr

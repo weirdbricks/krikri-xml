@@ -13,13 +13,15 @@ module KXML
     # - variable references ($x) are not supported (no binding mechanism),
     # - the namespace axis is not supported (the DOM has no namespace nodes),
     # - id() is not supported (requires DTD ID information).
-    def self.evaluate(expr : String, context : Node | Attribute, position : Int32 = 1, size : Int32 = 1) : Value
-      Evaluator.evaluate(expr, context, position, size)
+    def self.evaluate(expr : String, context : Node | Attribute, position : Int32 = 1, size : Int32 = 1,
+                      ns_map : Hash(String, String)? = nil) : Value
+      Evaluator.evaluate(expr, context, position, size, ns_map)
     end
 
     # Like `evaluate` but requires a node-set result.
-    def self.evaluate_nodes(expr : String, context : Node | Attribute, position : Int32 = 1, size : Int32 = 1) : NodeSet
-      v = evaluate(expr, context, position, size)
+    def self.evaluate_nodes(expr : String, context : Node | Attribute, position : Int32 = 1, size : Int32 = 1,
+                            ns_map : Hash(String, String)? = nil) : NodeSet
+      v = evaluate(expr, context, position, size, ns_map)
       raise Error.new("expression did not evaluate to a node-set", 0) unless v.is_a?(NodeSet)
       v
     end
