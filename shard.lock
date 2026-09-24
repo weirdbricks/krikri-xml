@@ -1,0 +1,10 @@
+version: 2.0
+shards:
+  ameba:
+    git: https://github.com/crystal-ameba/ameba.git
+    version: 1.7.0
+
+  xml:
+    git: https://github.com/ysbaddaden/xml.cr.git
+    version: 0.1.0+git.commit.090072aae907dc8e8cb1defdbad35e0deb418798
+

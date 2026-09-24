@@ -22,14 +22,15 @@ module KXML
       {(((b0 & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F)).chr, 4}
     end
   end
+
   # Strict, pure-Crystal XML 1.0 (Fifth Edition) parser.
   #
   # Implemented directly from W3C REC-xml-20081126 (well-formedness only,
   # no DTD validation). Raises `KXML::Error` on any well-formedness
   # violation, mirroring lxml's non-recovering behavior.
   class Parser
-    MAX_ELEMENT_DEPTH  = 10_000
-    MAX_ENTITY_DEPTH   = 64
+    MAX_ELEMENT_DEPTH  =     10_000
+    MAX_ENTITY_DEPTH   =         64
     MAX_EXPANDED_BYTES = 10_000_000
 
     # Predefined entities (4.6). Stored as their spec-required replacement
@@ -45,8 +46,8 @@ module KXML
 
     private struct Entity
       getter replacement : String
-      getter external : Bool
-      getter unparsed : Bool
+      getter? external : Bool
+      getter? unparsed : Bool
 
       def initialize(@replacement : String, @external = false, @unparsed = false)
       end
@@ -55,7 +56,7 @@ module KXML
     private struct AttDef
       getter type : String
       getter default_raw : String?
-      getter fixed : Bool
+      getter? fixed : Bool
 
       def initialize(@type : String, @default_raw : String?, @fixed : Bool)
       end
@@ -75,26 +76,31 @@ module KXML
     end
 
     private class Scanner
-      @sources  = [] of String
-      @labels   = [] of String
+      @sources = [] of String
+      @labels = [] of String
       @positions = [] of Int32
-      @lines    = [] of Int32
-      @cols     = [] of Int32
 
       @push_elem_depths = [] of Int32
       @popped_depths = [] of {Int32, Int32}
       property elem_depth_getter : Proc(Int32)? = nil
+
+      # One-entry lookahead cache for peek/advance: (source index, byte
+      # position, decoded char, byte length). Lets advance() prefetch the
+      # next character so each char is decoded only once.
+      @cache_src : Int32 = -1
+      @cache_pos : Int32 = -1
+      @cache_char : Char = '\0'
+      @cache_len : Int32 = 1
 
       def initialize(source : String, label : String)
         push(source, label, -1)
       end
 
       def push(source : String, label : String, elem_depth : Int32) : Nil
+        @cache_src = -1
         @sources << source
         @labels << label
         @positions << 0
-        @lines << 1
-        @cols << 0
         @push_elem_depths << elem_depth
       end
 
@@ -119,21 +125,32 @@ module KXML
         @labels.last
       end
 
+      # Line/column are only needed when an error is raised, so they are
+      # computed lazily by scanning the current source up to the position.
       def line : Int32
-        @lines.last
+        1 + _newlines_before(@positions.last)
       end
 
       def column : Int32
-        @cols.last
+        src = @sources.last
+        pos = @positions.last
+        line_start = src.rindex('\n', pos - 1)
+        line_start ? pos - line_start - 1 : pos + 1
+      end
+
+      private def _newlines_before(pos : Int32) : Int32
+        src = @sources.last
+        count = 0
+        src[0, pos].each_char { |char| count += 1 if char == '\n' }
+        count
       end
 
       private def compact : Nil
         while @sources.size > 1 && @positions.last >= @sources.last.bytesize
+          @cache_src = -1
           @sources.pop
           @labels.pop
           @positions.pop
-          @lines.pop
-          @cols.pop
           d = @push_elem_depths.pop
           if d >= 0
             cur = @elem_depth_getter.try(&.call) || 0
@@ -147,37 +164,178 @@ module KXML
         @sources.size == 1 && @positions.last >= @sources.last.bytesize
       end
 
+      # True when only the base document source is on the stack (no
+      # entity expansion in progress); enables byte-level fast paths.
+      def single_source? : Bool
+        @sources.size == 1
+      end
+
+      # Byte-level whitespace skip for the common single-source case.
+      # Returns true if at least one whitespace char was consumed.
+      def skip_ascii_whitespace : Bool
+        return false unless @sources.size == 1
+        src = @sources[0]
+        pos = @positions[0]
+        bytes = src.bytesize
+        start = pos
+        while pos < bytes
+          b = src.byte_at(pos)
+          if b == 0x20 || b == 0x09 || b == 0x0A || b == 0x0D
+            pos += 1
+          else
+            break
+          end
+        end
+        if pos > start
+          @positions[0] = pos
+          true
+        else
+          false
+        end
+      end
+
+      # Byte-level name read for the common single-source ASCII case.
+      # Returns nil when not applicable; consumes at least one char when
+      # a name is returned.
+      def read_ascii_name : String?
+        return unless @sources.size == 1
+        src = @sources[0]
+        pos = @positions[0]
+        bytes = src.bytesize
+        start = pos
+        while pos < bytes
+          b = src.byte_at(pos)
+          if (0x41 <= b <= 0x5A) || (0x61 <= b <= 0x7A) || (0x30 <= b <= 0x39) ||
+             b == 0x2D || b == 0x2E || b == 0x3A || b == 0x5F
+            pos += 1
+          else
+            break
+          end
+        end
+        return if pos == start
+        # If the run ends right before a non-ASCII byte, that byte may be
+        # a Unicode name character - fall back to the slow path.
+        return if pos < bytes && src.byte_at(pos) >= 0x80
+        @positions[0] = pos
+        # The scanned run is pure ASCII, so build the string from raw bytes
+        # (String#[] indexes by character, not byte, and converting byte
+        # offsets would be O(n) per name).
+        String.new(Slice.new(src.to_unsafe + start, pos - start))
+      end
+
+      # Batch-scans plain character data (single-source case only): bytes
+      # until '<', '&' or a "]]>" sequence. Returns nil when entity
+      # sources are active (caller falls back to the per-char loop). The
+      # '>' of a "]]>" is left unconsumed so the caller's raw-tracking
+      # check reports the error. *brackets* is the number of ']' already
+      # pending from the previous chunk (0-2).
+      def read_plain_text(brackets : Int32) : String?
+        return unless @sources.size == 1
+        src = @sources[0]
+        pos = @positions[0]
+        bytes = src.bytesize
+        start = pos
+        run = brackets
+        while pos < bytes
+          b = src.byte_at(pos)
+          if b == 0x3C || b == 0x26 # '<' '&'
+            break
+          elsif b == 0x5D # ']'
+            run = run >= 2 ? 2 : run + 1
+            pos += 1
+          elsif b == 0x3E && run >= 2 # '>' closing a "]]>"
+            break
+          else
+            run = 0
+            pos += 1
+          end
+        end
+        return "" if pos == start
+        @positions[0] = pos
+        # The chunk ends at '<', '&' or before "]]>", never mid-character.
+        String.new(Slice.new(src.to_unsafe + start, pos - start))
+      end
+
+      # Batch-scans attribute-value bytes (single-source case only) up
+      # to the closing quote, '<' or '&'. Returns nil when entity sources
+      # are active. Returns "" without consuming when already at one of
+      # those stops.
+      def read_attr_chunk(quote : Char) : String?
+        return unless @sources.size == 1
+        src = @sources[0]
+        pos = @positions[0]
+        bytes = src.bytesize
+        start = pos
+        qb = quote.ord
+        while pos < bytes
+          b = src.byte_at(pos)
+          break if b == qb || b == 0x3C || b == 0x26 # quote '<' '&'
+          pos += 1
+        end
+        return "" if pos == start
+        @positions[0] = pos
+        String.new(Slice.new(src.to_unsafe + start, pos - start))
+      end
+
       def peek : Char?
-        return nil if eof?
-        KXML.decode_char_at(@sources.last, @positions.last)[0]
+        return if eof?
+        si = @sources.size - 1
+        pos = @positions.last
+        if @cache_src == si && @cache_pos == pos
+          return @cache_char
+        end
+        ch, len = KXML.decode_char_at(@sources[si], pos)
+        @cache_src = si
+        @cache_pos = pos
+        @cache_char = ch
+        @cache_len = len
+        ch
       end
 
       def advance : Char
         compact
-        raise "scanner bug: advance at EOF" if @positions.last >= @sources.last.bytesize
-        ch, len = KXML.decode_char_at(@sources.last, @positions.last)
-        @positions[@positions.size - 1] += len
-        if ch == '\n'
-          @lines[@lines.size - 1] += 1
-          @cols[@cols.size - 1] = 0
-        else
-          @cols[@cols.size - 1] += 1
+        if @positions.last >= @sources.last.bytesize
+          raise "scanner bug: advance at EOF"
         end
+        si = @sources.size - 1
+        pos = @positions.last
+        ch, len = KXML.decode_char_at(@sources[si], pos)
+        @positions[si] = pos + len
+        # Prefetch disabled for bisection
+        @cache_src = -1
         ch
       end
 
       # Consume *str* if the next characters match it (possibly across
       # entity-source boundaries); otherwise restore the exact state.
       def match?(str : String) : Bool
-        saved_sources  = @sources.dup
-        saved_labels   = @labels.dup
+        # Fast path: single source, pure-ASCII str, no entity expansion
+        # active - compare bytes directly with no state duplication.
+        if @sources.size == 1
+          src = @sources[0]
+          pos = @positions[0]
+          bytes = src.bytesize
+          ok = true
+          i = 0
+          while i < str.bytesize
+            p = pos + i
+            if p >= bytes || src.byte_at(p) != str.byte_at(i)
+              ok = false
+              break
+            end
+            i += 1
+          end
+          return false unless ok
+          @positions[0] = pos + str.bytesize
+          return true
+        end
+        saved_sources = @sources.dup
+        saved_labels = @labels.dup
         saved_positions = @positions.dup
-        saved_lines    = @lines.dup
-        saved_cols     = @cols.dup
         ok = true
-        str.each_char do |ch|
+        str.each_char do |char|
           p = peek
-          if p.nil? || p != ch
+          if p.nil? || p != char
             ok = false
             break
           end
@@ -187,8 +345,6 @@ module KXML
           @sources = saved_sources
           @labels = saved_labels
           @positions = saved_positions
-          @lines = saved_lines
-          @cols = saved_cols
         end
         ok
       end
@@ -202,8 +358,13 @@ module KXML
     @dep_graph = {} of String => Set(String)
     @ns_stack = [] of Hash(String, String?)
     @element_depth = 0
+    @order_counter = 0
     @expanded_bytes = 0
     @text_buf : String::Builder? = nil
+    @text_buf_order : Int32? = nil
+    # Pending text as a raw string; only promoted into @text_buf when a
+    # character/entity reference forces incremental building.
+    @pending_text : String? = nil
     @raw_pp : Char? = nil
     @raw_prev : Char? = nil
     @raw_label : String? = nil
@@ -213,7 +374,7 @@ module KXML
 
     def initialize(source : String)
       @scanner = Scanner.new(source, "document")
-      @scanner.elem_depth_getter = ->{ @element_depth }
+      @scanner.elem_depth_getter = -> { @element_depth }
       base = Hash(String, String?).new
       base["xml"] = XML_NAMESPACE_URI
       @ns_stack << base
@@ -233,11 +394,11 @@ module KXML
 
     private def self.validate_chars(source : String) : Nil
       byte_pos = 0
-      source.each_char do |ch|
-        unless valid_codepoint?(ch.ord)
-          raise Error.new("invalid XML character U+#{ch.ord.to_s(16)}", 1, byte_pos, "document")
+      source.each_char do |char|
+        unless valid_codepoint?(char.ord)
+          raise Error.new("invalid XML character U+#{char.ord.to_s(16)}", 1, byte_pos, "document")
         end
-        byte_pos += ch.bytesize
+        byte_pos += char.bytesize
       end
     end
 
@@ -250,6 +411,10 @@ module KXML
 
     # ------------------------------------------------------------------
     # errors
+
+    private def next_order : Int32
+      @order_counter += 1
+    end
 
     private def error(message : String) : NoReturn
       raise Error.new(message, @scanner.line, @scanner.column, @scanner.label)
@@ -289,6 +454,7 @@ module KXML
     end
 
     private def skip_s : Bool
+      return true if @scanner.skip_ascii_whitespace
       found = false
       while c = @scanner.peek
         break unless whitespace?(c)
@@ -313,6 +479,9 @@ module KXML
     private def parse_name_raw : String
       c = @scanner.peek
       error("expected a name") if c.nil? || !name_start_char?(c)
+      if (c.ascii_letter? || c == '_') && (s = @scanner.read_ascii_name)
+        return s
+      end
       String.build do |b|
         b << @scanner.advance
         while d = @scanner.peek
@@ -323,6 +492,7 @@ module KXML
     end
 
     private def split_qname(raw : String) : {String?, String}
+      return {nil, raw} unless raw.includes?(':')
       parts = raw.split(':')
       if parts.size > 2 || parts.any?(&.empty?)
         error("invalid name '#{raw}'")
@@ -374,7 +544,9 @@ module KXML
     def parse : Document
       skip_bom
       parse_prolog
-      @doc.root = parse_element
+      root = parse_element
+      root.parent_node = @doc
+      @doc.root = root
       parse_epilog
       @doc
     end
@@ -399,10 +571,14 @@ module KXML
             parse_doctype
             prolog_started = true
           elsif @scanner.match?("<!--")
-            @doc.misc_before << parse_comment_rest
+            misc = parse_comment_rest
+            misc.parent_node = @doc
+            @doc.misc_before << misc
             prolog_started = true
           elsif @scanner.match?("<?")
-            @doc.misc_before << parse_pi_rest
+            misc = parse_pi_rest
+            misc.parent_node = @doc
+            @doc.misc_before << misc
             prolog_started = true
           else
             break
@@ -420,9 +596,13 @@ module KXML
         return if c.nil?
         if c == '<'
           if @scanner.match?("<!--")
-            @doc.misc_after << parse_comment_rest
+            misc = parse_comment_rest
+            misc.parent_node = @doc
+            @doc.misc_after << misc
           elsif @scanner.match?("<?")
-            @doc.misc_after << parse_pi_rest
+            misc = parse_pi_rest
+            misc.parent_node = @doc
+            @doc.misc_after << misc
           else
             error("unexpected markup after the root element")
           end
@@ -467,9 +647,9 @@ module KXML
     private def valid_enc_name?(enc : String) : Bool
       first = enc.char_at(0)
       return false unless 'A' <= first <= 'Z' || 'a' <= first <= 'z'
-      enc.each_char.all? do |ch|
-        ('A' <= ch <= 'Z') || ('a' <= ch <= 'z') || ('0' <= ch <= '9') ||
-          ch == '.' || ch == '_' || ch == '-'
+      enc.each_char.all? do |char|
+        ('A' <= char <= 'Z') || ('a' <= char <= 'z') || ('0' <= char <= '9') ||
+          char == '.' || char == '_' || char == '-'
       end
     end
 
@@ -508,7 +688,9 @@ module KXML
             content = content[0...content.size - 2]
             error("'--' is not allowed inside a comment") if content.includes?("--")
             error("comment content must not end with '-'") if content.ends_with?('-')
-            return Comment.new(content)
+            c = Comment.new(content)
+            c.doc_order = next_order
+            return c
           elsif nxt.nil?
             error("unterminated comment")
           elsif nxt != '-'
@@ -550,7 +732,9 @@ module KXML
         if last_question && ch == '>'
           text = content.to_s
           text = text[0...text.size - 1]
-          return ProcessingInstruction.new(target, text)
+          pi = ProcessingInstruction.new(target, text)
+          pi.doc_order = next_order
+          return pi
         end
         content << ch
         last_question = ch == '?'
@@ -580,7 +764,9 @@ module KXML
           error("expected 'SYSTEM' or 'PUBLIC'")
         end
       end
-      @doc.doctype = DocumentType.new(name, pub, sys)
+      doctype = DocumentType.new(name, pub, sys)
+      doctype.doc_order = next_order
+      @doc.doctype = doctype
       skip_s
       if (c = @scanner.peek) && c == '['
         @scanner.advance
@@ -591,10 +777,10 @@ module KXML
     end
 
     private def validate_pubid(pub : String) : Nil
-      pub.each_char do |ch|
-        ok = ch == ' ' || ch == '\r' || ch == '\n' ||
-             ('A' <= ch <= 'Z') || ('a' <= ch <= 'z') || ('0' <= ch <= '9') ||
-             "-'()+,./:=?;!*#@$_%".includes?(ch)
+      pub.each_char do |char|
+        ok = char == ' ' || char == '\r' || char == '\n' ||
+             ('A' <= char <= 'Z') || ('a' <= char <= 'z') || ('0' <= char <= '9') ||
+             "-'()+,./:=?;!*#@$_%".includes?(char)
         error("invalid character in public identifier") unless ok
       end
     end
@@ -613,7 +799,7 @@ module KXML
           name = parse_entity_ref_name(ref_depth)
           pe = @pes[name]?
           error("parameter entity '#{name}' is not declared") if pe.nil?
-          error("external parameter entities are not supported") if pe.external
+          error("external parameter entities are not supported") if pe.external?
           # 4.4.8 Included as PE: pad with one leading and trailing space.
           push_replacement(" #{pe.replacement} ", "parameter entity '#{name}'")
         elsif @scanner.match?("<!ENTITY")
@@ -696,7 +882,7 @@ module KXML
       if c == ')'
         @scanner.advance
       elsif c == '|' || c == ','
-        sep = c.not_nil!
+        sep = c.as(Char)
         @scanner.advance
         loop do
           skip_s
@@ -721,7 +907,7 @@ module KXML
     private def parse_mixed_tail : Nil
       has_names = false
       loop do
-        had_space = skip_s
+        skip_s
         c = @scanner.peek
         error("unterminated mixed content model") if c.nil?
         if c == ')'
@@ -821,12 +1007,12 @@ module KXML
     private def check_entity_cycles(node : String, path : Set(String), depth : Int32) : Nil
       error("recursive entity reference involving '#{node}'") if depth > MAX_ENTITY_DEPTH
       deps = @dep_graph[node]? || return
-      deps.each do |d|
-        next if PREDEFINED_ENTITIES.has_key?(d)
-        error("recursive entity reference involving '#{d}'") if path.includes?(d)
-        path << d
-        check_entity_cycles(d, path, depth + 1)
-        path.delete(d)
+      deps.each do |dep|
+        next if PREDEFINED_ENTITIES.has_key?(dep)
+        error("recursive entity reference involving '#{dep}'") if path.includes?(dep)
+        path << dep
+        check_entity_cycles(dep, path, depth + 1)
+        path.delete(dep)
       end
     end
 
@@ -1008,7 +1194,7 @@ module KXML
         q = @scanner.peek
         error("expected a quoted default value") unless q == '"' || q == '\''
         @scanner.advance
-        {parse_att_literal(q.not_nil!), true}
+        {parse_att_literal(q.as(Char)), true}
       elsif (q = @scanner.peek) && (q == '"' || q == '\'')
         @scanner.advance
         {parse_att_literal(q), false}
@@ -1026,6 +1212,10 @@ module KXML
     private def parse_att_literal(quote : Char) : String
       b = String::Builder.new
       loop do
+        # Fast path: batch plain bytes between references.
+        if chunk = @scanner.read_attr_chunk(quote)
+          b << chunk unless chunk.empty?
+        end
         c = @scanner.peek
         error("unterminated attribute value") if c.nil?
         if c == quote
@@ -1046,8 +1236,6 @@ module KXML
             validate_entity_ref_for_attribute(name)
             b << '&' << name << ';'
           end
-        else
-          b << @scanner.advance
         end
       end
     end
@@ -1056,7 +1244,7 @@ module KXML
       return if PREDEFINED_ENTITIES.has_key?(name)
       e = @entities[name]?
       error("entity '#{name}' is not declared") if e.nil?
-      error("references to external entities are not allowed in attribute values") if e.external
+      error("references to external entities are not allowed in attribute values") if e.external?
     end
 
     private def validate_default_refs(raw : String) : Nil
@@ -1087,6 +1275,11 @@ module KXML
     # attribute-value normalization (3.3.3)
 
     def normalize_att_value(raw : String, type : String) : String
+      # Fast path: no references and no whitespace normalization needed.
+      unless raw.includes?('&') || raw.includes?('\t') ||
+             raw.includes?('\n') || raw.includes?('\r')
+        return type == "CDATA" ? raw : collapse_spaces(raw)
+      end
       b = String::Builder.new
       i = 0
       size = raw.bytesize
@@ -1119,15 +1312,15 @@ module KXML
 
     private def append_entity_in_attribute(name : String, b : String::Builder, depth : Int32) : Nil
       case name
-      when "lt" then b << '<'
-      when "gt" then b << '>'
-      when "amp" then b << '&'
+      when "lt"   then b << '<'
+      when "gt"   then b << '>'
+      when "amp"  then b << '&'
       when "apos" then b << '\''
       when "quot" then b << '"'
       else
         e = @entities[name]?
         raise Error.new("bug: entity '#{name}' missing during normalization", 0, 0) if e.nil?
-        error("references to external entities are not allowed in attribute values") if e.external
+        error("references to external entities are not allowed in attribute values") if e.external?
         walk_entity_replacement(e.replacement, b, depth + 1)
       end
     end
@@ -1206,8 +1399,9 @@ module KXML
       @scanner.advance
       raw_name = parse_name_raw
       eprefix, elocal = split_qname(raw_name)
+      elem_order = next_order
 
-      raw_attrs = [] of {String, String?, String, String, Bool}
+      raw_attrs = [] of {String, String?, String, String, Bool, Int32}
       self_closing = false
       loop do
         had_space = skip_s
@@ -1232,10 +1426,10 @@ module KXML
           q = @scanner.peek
           error("expected a quoted attribute value") unless q == '"' || q == '\''
           @scanner.advance
-          raw_value = parse_att_literal(q.not_nil!)
+          raw_value = parse_att_literal(q.as(Char))
           value = normalize_att_value(raw_value, attribute_type(raw_name, ap_raw))
-          error("duplicate attribute '#{ap_raw}'") if raw_attrs.any? { |r| r[0] == ap_raw }
-          raw_attrs << {ap_raw, a_pfx, a_local, value, true}
+          error("duplicate attribute '#{ap_raw}'") if raw_attrs.any? { |raw| raw[0] == ap_raw }
+          raw_attrs << {ap_raw, a_pfx, a_local, value, true, next_order}
         end
       end
 
@@ -1244,6 +1438,7 @@ module KXML
       elem_uri = resolve_element_namespace(scope, eprefix, raw_name)
       attributes = resolve_attribute_namespaces(scope, raw_attrs)
       elem = Element.new(raw_name, eprefix, elocal, elem_uri, attributes)
+      elem.doc_order = elem_order
 
       @ns_stack.push(scope)
       if self_closing
@@ -1266,13 +1461,13 @@ module KXML
       "CDATA"
     end
 
-    private def apply_attribute_defaults(elem_name : String, raw_attrs : Array({String, String?, String, String, Bool})) : Nil
+    private def apply_attribute_defaults(elem_name : String, raw_attrs : Array({String, String?, String, String, Bool, Int32})) : Nil
       return unless table = @attlists[elem_name]?
       table.each do |attr_name, defn|
-        next if raw_attrs.any? { |r| r[0] == attr_name }
+        next if raw_attrs.any? { |raw| raw[0] == attr_name }
         if dv = defn.default_raw
           a_pfx, a_local = split_qname(attr_name)
-          raw_attrs << {attr_name, a_pfx, a_local, normalize_att_value(dv, defn.type), false}
+          raw_attrs << {attr_name, a_pfx, a_local, normalize_att_value(dv, defn.type), false, next_order}
         end
       end
     end
@@ -1327,7 +1522,7 @@ module KXML
           if nxt == '#'
             @scanner.advance
             cp = parse_char_ref_after_hash(@scanner.depth)
-            text_buf << cp.chr
+            append_text_char(cp.chr)
             @raw_pp = nil
             @raw_prev = nil
           else
@@ -1344,8 +1539,25 @@ module KXML
           if (pp = @raw_pp) && (pv = @raw_prev) && pp == ']' && pv == ']' && @scanner.peek == '>'
             error("']]>' is not allowed in character data")
           end
+          pending = 0
+          pending += 1 if (pv = @raw_prev) && pv == ']'
+          pending += 1 if (pp = @raw_pp) && pp == ']'
+          chunk = @scanner.read_plain_text(pending)
+          if chunk && !chunk.empty?
+            append_text_chunk(chunk)
+            # Track the trailing ']' run across chunks (only ']]>' matters).
+            run = pending
+            i = chunk.bytesize - 1
+            while i >= 0 && chunk.byte_at(i) == 0x5D && run < 2
+              run += 1
+              i -= 1
+            end
+            @raw_pp = run >= 2 ? ']' : nil
+            @raw_prev = run >= 1 ? ']' : nil
+            next
+          end
           ch = @scanner.advance
-          text_buf << ch
+          append_text_char(ch)
           @raw_pp = @raw_prev
           @raw_prev = ch
         end
@@ -1353,7 +1565,40 @@ module KXML
     end
 
     private def text_buf : String::Builder
-      @text_buf ||= String::Builder.new
+      unless buf = @text_buf
+        buf = String::Builder.new
+        @text_buf = buf
+        @text_buf_order = next_order
+      end
+      buf
+    end
+
+    # Appends plain text, avoiding the String::Builder when possible.
+    private def append_text_chunk(s : String) : Nil
+      if buf = @text_buf
+        buf << s
+      elsif pt = @pending_text
+        buf = text_buf
+        buf << pt << s
+        @text_buf = buf
+        @pending_text = nil
+      else
+        @pending_text = s
+        @text_buf_order = next_order unless @text_buf_order
+      end
+    end
+
+    # Appends a single char (from a character reference), promoting any
+    # pending string into the builder.
+    private def append_text_char(ch : Char) : Nil
+      if pt = @pending_text
+        buf = text_buf
+        buf << pt << ch
+        @text_buf = buf
+        @pending_text = nil
+      else
+        text_buf << ch
+      end
     end
 
     private def reset_raw_tracking : Nil
@@ -1364,18 +1609,30 @@ module KXML
 
     private def flush_text(elem : Element) : Nil
       reset_raw_tracking
+      s = nil
+      order = nil
       if buf = @text_buf
         @text_buf = nil
+        order = @text_buf_order.as(Int32)
+        @text_buf_order = nil
         s = buf.to_s
-        return if s.empty?
-        last = elem.children.last?
-        if last.is_a?(Text)
-          last.content += s
-        else
-          t = Text.new(s)
-          t.parent_node = elem
-          elem.children << t
-        end
+      elsif pt = @pending_text
+        @pending_text = nil
+        order = @text_buf_order.as(Int32)
+        @text_buf_order = nil
+        s = pt
+      end
+      return if s.nil? || s.as(String).empty?
+      text = s.as(String)
+      ord = order.as(Int32)
+      last = elem.children.last?
+      if last.is_a?(Text)
+        last.content += text
+      else
+        t = Text.new(text)
+        t.doc_order = ord
+        t.parent_node = elem
+        elem.children << t
       end
     end
 
@@ -1415,7 +1672,7 @@ module KXML
       end
       e = @entities[name]?
       error("entity '#{name}' is not declared") if e.nil?
-      error("external entity '#{name}' cannot be included (external entities are not supported)") if e.external
+      error("external entity '#{name}' cannot be included (external entities are not supported)") if e.external?
       push_replacement(e.replacement, "entity '#{name}'", @element_depth)
     end
 
@@ -1433,7 +1690,13 @@ module KXML
     # ------------------------------------------------------------------
     # namespaces (XML Namespaces 1.0)
 
-    private def build_scope(raw_attrs : Array({String, String?, String, String, Bool})) : Hash(String, String?)
+    private def build_scope(raw_attrs : Array({String, String?, String, String, Bool, Int32})) : Hash(String, String?)
+      # Fast path: no xmlns declarations - share the parent scope (it is
+      # never mutated by callers, only read).
+      has_ns_decl = raw_attrs.any? do |_, pfx, local, _, _|
+        pfx == "xmlns" || (pfx.nil? && local == "xmlns")
+      end
+      return @ns_stack.last unless has_ns_decl
       scope = @ns_stack.last.dup
       raw_attrs.each do |_, pfx, local, value, _|
         if pfx == "xmlns"
@@ -1470,8 +1733,29 @@ module KXML
       end
     end
 
-    private def resolve_attribute_namespaces(scope : Hash(String, String?), raw_attrs : Array({String, String?, String, String, Bool})) : Array(Attribute)
-      attributes = raw_attrs.map do |raw, pfx, local, value, specified|
+    private def resolve_attribute_namespaces(scope : Hash(String, String?), raw_attrs : Array({String, String?, String, String, Bool, Int32})) : Array(Attribute)
+      # Fast path: no namespace-prefixed or xmlns attributes - all
+      # attributes are no-namespace; the duplicate check is a linear scan
+      # (attribute lists are small).
+      ns_free = raw_attrs.all? do |_, pfx, local, _, _|
+        pfx.nil? && local != "xmlns"
+      end
+      if ns_free
+        attributes = raw_attrs.map do |raw, pfx, local, value, specified, order|
+          a = Attribute.new(raw, pfx, local, nil, value, specified)
+          a.doc_order = order
+          a
+        end
+        attributes.each_with_index do |a, i|
+          j = i + 1
+          while j < attributes.size
+            error("duplicate attribute '#{a.name}'") if attributes[j].name == a.name
+            j += 1
+          end
+        end
+        return attributes
+      end
+      attributes = raw_attrs.map do |raw, pfx, local, value, specified, order|
         uri =
           if pfx == "xmlns" || (pfx.nil? && local == "xmlns")
             XMLNS_NAMESPACE_URI
@@ -1479,10 +1763,10 @@ module KXML
             u = scope[pfx]?
             error("namespace prefix '#{pfx}' on attribute '#{raw}' has not been declared") if u.nil? || u.empty?
             u
-          else
-            nil
           end
-        Attribute.new(raw, pfx, local, uri, value, specified)
+        a = Attribute.new(raw, pfx, local, uri, value, specified)
+        a.doc_order = order
+        a
       end
       seen = Set({String?, String}).new
       attributes.each do |a|

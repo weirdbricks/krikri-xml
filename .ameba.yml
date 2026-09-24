@@ -1,0 +1,28 @@
+# The point is for the user to remove these configuration records
+# one by one as the reported problems are removed from the code base.
+#
+# For more details on any individual rule, run
+# `ameba --ignore-config --only RuleName`.
+
+Lint/NotNil:
+  Excluded:
+  - spec/conformance_spec.cr
+  - spec/doctype_spec.cr
+  - spec/entities_spec.cr
+  - spec/namespaces_spec.cr
+  - spec/normalization_spec.cr
+  - spec/parser_spec.cr
+  - spec/spec_helper.cr
+  - spec/xpath_spec.cr
+
+# These are single-dispatch tables (char-class membership tests, case
+# statements over the XPath expression grammar) where splitting the
+# logic up would obscure the spec structure they mirror.
+Metrics/CyclomaticComplexity:
+  Excluded:
+  - src/kxml/parser.cr
+  - src/kxml/xpath/base.cr
+  - src/kxml/xpath/evaluator.cr
+  - src/kxml/xpath/lexer.cr
+  - src/kxml/xpath/parser.cr
+  - spec/conformance_spec.cr

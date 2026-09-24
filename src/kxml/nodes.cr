@@ -15,12 +15,13 @@ module KXML
   end
 
   class Attribute
+    property doc_order : Int32 = 0
     getter name : String
     getter prefix : String?
     getter local_name : String
     getter namespace_uri : String?
     getter value : String
-    getter specified : Bool
+    getter? specified : Bool
 
     def initialize(@name : String, @prefix : String?, @local_name : String,
                    @namespace_uri : String?, @value : String, @specified : Bool)
@@ -29,11 +30,15 @@ module KXML
 
   abstract class Node
     property parent_node : Node?
+    # Document order, assigned by the parser (creation order). 0 for the
+    # document node itself.
+    property doc_order : Int32 = 0
 
     def document : Document?
-      node : Node? = self
-      while node = node.parent_node
-        return node if node.is_a?(Document)
+      node : Node = self
+      while p = node.parent_node
+        return p if p.is_a?(Document)
+        node = p
       end
       nil
     end

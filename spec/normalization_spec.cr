@@ -45,7 +45,7 @@ describe KXML::Parser do
       source = %(<!DOCTYPE root [<!ATTLIST root a CDATA "d">]><root/>)
       doc = KXML.parse(source)
       a = doc.root.not_nil!.attribute("a").should_not be_nil
-      a.specified.should be_false
+      a.specified?.should be_false
       a.value.should eq("d")
     end
 
@@ -53,7 +53,7 @@ describe KXML::Parser do
       source = %(<!DOCTYPE root [<!ATTLIST root a CDATA "d">]><root a="x"/>)
       doc = KXML.parse(source)
       a = doc.root.not_nil!.attribute("a").should_not be_nil
-      a.specified.should be_true
+      a.specified?.should be_true
       a.value.should eq("x")
     end
   end

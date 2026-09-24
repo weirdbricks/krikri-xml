@@ -44,10 +44,10 @@ def prepare_catalog(xml : String, fragment : Bool) : String
 end
 
 def collect_tests(node : KXML::Node, acc : Array(KXML::Element)) : Nil
-  node.children.each do |c|
-    next unless c.is_a?(KXML::Element)
-    acc << c if c.name == "TEST"
-    collect_tests(c, acc)
+  node.children.each do |child|
+    next unless child.is_a?(KXML::Element)
+    acc << child if child.name == "TEST"
+    collect_tests(child, acc)
   end
 end
 
@@ -81,11 +81,11 @@ def run_suite : Result
       end
       tests = [] of KXML::Element
       collect_tests(catalog, tests)
-      tests.each do |t|
-        type = t["TYPE"]
-        uri = t["URI"]
-        id = t["ID"]
-        entities = t["ENTITIES"]
+      tests.each do |test_case|
+        type = test_case["TYPE"]
+        uri = test_case["URI"]
+        id = test_case["ID"]
+        entities = test_case["ENTITIES"]
         if type.nil? || uri.nil?
           skipped << "#{cat} (TEST missing TYPE/URI)"
           next
@@ -98,10 +98,10 @@ def run_suite : Result
         end
         kind =
           case type
-          when "valid" then :valid
-          when "not-wf" then :not_wf
+          when "valid"   then :valid
+          when "not-wf"  then :not_wf
           when "invalid" then :invalid
-          when "error" then :error
+          when "error"   then :error
           else
             skipped << "#{id} (unknown TYPE '#{type}')"
             next
@@ -157,15 +157,15 @@ KNOWN_DIVERGENCES = {
   # classes; this parser implements the 5th-edition NameStartChar
   # production, under which those characters are legal name characters.
   # Same 4th-edition name-character expectations in Clark's suite.
-  "not-wf-sa-140"    => "combining char as name start (4th-ed rule)",
-  "not-wf-sa-141"    => "extender as second name char (4th-ed rule)",
+  "not-wf-sa-140" => "combining char as name start (4th-ed rule)",
+  "not-wf-sa-141" => "extender as second name char (4th-ed rule)",
   # Colon-containing names: the suite's Name-production tests (which
   # predate or ignore the Namespaces REC) accept them; this parser always
   # applies NS rules, under which an empty prefix or undeclared prefix
   # is an error.
-  "valid-sa-012"     => "':' as an attribute name",
-  "o-p04pass1"       => "colon name without declaration (pre-NS test)",
-  "o-p05pass1"       => "colon names without declaration (pre-NS test)",
+  "valid-sa-012"                   => "':' as an attribute name",
+  "o-p04pass1"                     => "colon name without declaration (pre-NS test)",
+  "o-p05pass1"                     => "colon names without declaration (pre-NS test)",
   "x-ibm-1-0.5-valid-P04-ibm04v01" => "leading-colon name",
   "x-ibm-1-0.5-valid-P05-ibm05v01" => "trailing-colon name",
   "x-ibm-1-0.5-valid-P05-ibm05v03" => "leading-colon attribute",
@@ -177,11 +177,11 @@ KNOWN_DIVERGENCES = {
   "x-ibm-1-0.5-valid-P05-ibm05v05" => "colon in entity name (NS-aware reading)",
   # Encoding-declaration compatibility checks require real transcoding,
   # which this parser does not perform (input is a UTF-8 String).
-  "rmt-e2e-61"       => "declared-encoding compatibility check",
-  "hst-lhs-007"      => "BOM/encoding compatibility check",
+  "rmt-e2e-61"  => "declared-encoding compatibility check",
+  "hst-lhs-007" => "BOM/encoding compatibility check",
   # Undeclared-entity severity depends on standalone/external-subset
   # semantics this parser does not model.
-  "rmt-e3e-13"       => "undeclared entity severity with PE references",
+  "rmt-e3e-13" => "undeclared entity severity with PE references",
 }
 
 PITARGET_4ED = /^ibm-not-wf-P(85|86|87|88|89)-/
@@ -193,8 +193,8 @@ def known_divergence?(entry : String) : Bool
 end
 
 results = run_suite
-divergent = results.unexpected.select { |u| known_divergence?(u) }
-unexplained = results.unexpected.reject { |u| known_divergence?(u) }
+divergent = results.unexpected.select { |entry| known_divergence?(entry) }
+unexplained = results.unexpected.reject { |entry| known_divergence?(entry) }
 
 describe "W3C XML conformance suite" do
   it "accepts every well-formed case and rejects every not-wf case" do
@@ -209,7 +209,7 @@ describe "W3C XML conformance suite" do
     unless missing.empty?
       fail("documented divergences no longer failing (they pass now): " + missing.join(", "))
     end
-    (divergent.any? { |d| d.split(" ")[0] =~ PITARGET_4ED }).should be_true
+    (divergent.any? { |entry| entry.split(" ")[0] =~ PITARGET_4ED }).should be_true
   end
 
   it "executes a substantial number of cases" do

@@ -96,7 +96,7 @@ describe KXML::Parser do
       doc = KXML.parse(source)
       a = doc.root.not_nil!.attribute("p:a").should_not be_nil
       a.namespace_uri.should eq("urn:p")
-      a.specified.should be_false
+      a.specified?.should be_false
     end
   end
 end

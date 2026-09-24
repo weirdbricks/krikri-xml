@@ -26,10 +26,14 @@ reference.
 - Namespaces in XML 1.0 (default namespace, prefixed bindings, undeclaring,
   conflict detection).
 - Basic `to_xml` serialization.
+- XPath 1.0 evaluation (`KXML::XPath`), implemented from
+  [REC-xpath-19991116](https://www.w3.org/TR/1999/REC-xpath-19991116/) and
+  covered by `spec/xpath_spec.cr`. Deliberate limitations, raised as
+  `KXML::XPath::Error`: variable references (`$x`), the namespace axis,
+  and `id()` (requires DTD ID information).
 
 Not implemented (yet):
 
-- XPath 1.0 evaluation.
 - External entity / external subset fetching (references to external
   entities are recognized and rejected - deliberate, since krikri's use is
   offline).
