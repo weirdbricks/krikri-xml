@@ -1455,6 +1455,9 @@ module KXML
     private def attribute_type(elem_name : String, attr_name : String) : String
       if table = @attlists[elem_name]?
         if defn = table[attr_name]?
+          if defn.type == "ID"
+            @doc.id_attribute_names << attr_name
+          end
           return defn.type
         end
       end

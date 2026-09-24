@@ -19,6 +19,8 @@ module KXML
     # Section 5: string-values.
     def self.string_value(node : Node | Attribute) : String
       case node
+      when NamespaceNode
+        node.href
       when Attribute
         node.value
       when Text, CData
@@ -68,6 +70,8 @@ module KXML
     # node kinds.
     def self.local_name_of(node : Node | Attribute) : String
       case node
+      when NamespaceNode
+        node.prefix || ""
       when Attribute
         node.local_name
       when Element
@@ -81,6 +85,8 @@ module KXML
 
     def self.expanded_name_of(node : Node | Attribute) : String
       case node
+      when NamespaceNode
+        node.prefix || ""
       when Attribute, Element
         node.name
       when ProcessingInstruction

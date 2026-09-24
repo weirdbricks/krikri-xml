@@ -94,6 +94,17 @@ describe KXML::XPath do
       eval_nodes("following::price", price).size.should eq(2)
     end
 
+    it "supports the namespace axis" do
+      d = KXML.parse(%(<r xmlns="urn:d" xmlns:p="urn:p"/>))
+      r = d.root.not_nil!
+      ns_nodes = KXML::XPath.evaluate_nodes("namespace::*", r)
+      hrefs = ns_nodes.map { |node| KXML::XPath.string_value(node) }.sort!
+      hrefs.should eq(["urn:d", "urn:p", "http://www.w3.org/XML/1998/namespace"].sort!)
+      KXML::XPath.evaluate_nodes("namespace::p", r).size.should eq(1)
+      KXML::XPath.evaluate_nodes("namespace::*", r)[0].as(KXML::NamespaceNode).href
+      KXML::XPath.evaluate("count(namespace::*)", r).should eq(3.0)
+    end
+
     it "supports wildcard and prefix node tests" do
       eval_nodes("book/*").size.should eq(10) # 4 element children of book 1, 3 each of books 2-3
       eval_nodes("x:*").size.should eq(0)     # urn:x namespace has no elements
@@ -285,6 +296,15 @@ describe KXML::XPath do
       eval_one("count(//book)").should eq(3)
       eval_one("count(//@id)").should eq(3)
     end
+
+    it "resolves id() through DTD-declared ID attributes" do
+      d = KXML.parse(%(<!DOCTYPE r [<!ELEMENT r ANY><!ATTLIST a uid ID #IMPLIED>]><r><a uid="x1"/><a uid="x2"/></r>))
+      nodes = KXML::XPath.evaluate_nodes("id('x2')", d)
+      nodes.size.should eq(1)
+      nodes[0].as(KXML::Element)["uid"].should eq("x2")
+      # id() accepts a whitespace-separated token list, deduped in doc order
+      KXML::XPath.evaluate_nodes("id('x1 x2 x1')", d).size.should eq(2)
+    end
   end
 
   describe "boolean functions" do
@@ -342,8 +362,10 @@ describe KXML::XPath do
 
     it "rejects unsupported features" do
       expect_raises(KXML::XPath::Error, "variables") { KXML::XPath.evaluate("$x", root) }
-      expect_raises(KXML::XPath::Error, "namespace axis") { KXML::XPath.evaluate("namespace::*", root) }
-      expect_raises(KXML::XPath::Error, "id()") { KXML::XPath.evaluate("id('b1')", root) }
+
+      # id() resolves through DTD-declared ID attributes; the fixture has
+      # no DTD, so every token misses and the result is an empty node-set.
+      KXML::XPath.evaluate_nodes("id('b1')", root).size.should eq(0)
       expect_raises(KXML::XPath::Error) { KXML::XPath.evaluate("unknownfn(1)", root) }
     end
   end

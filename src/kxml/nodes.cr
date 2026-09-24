@@ -104,6 +104,11 @@ module KXML
     getter misc_before = [] of Node
     getter misc_after = [] of Node
 
+    # Attribute names declared `ID` in the internal DTD subset
+    # (population is best-effort: only ATTLIST declarations seen during
+    # the parse register here). Lets XPath's id() resolve tokens.
+    getter id_attribute_names = Set(String).new
+
     # Creates an element for *name* (a Clark-notation `{uri}local` or a
     # plain/qualified name). When a namespace URI is involved and no
     # in-scope binding exists on *context* (or its ancestors), the
@@ -471,6 +476,25 @@ module KXML
         io << ' ' << content
       end
       io << "?>"
+    end
+  end
+
+  # A synthesized namespace node for XPath's namespace axis: the DOM
+  # stores namespaces as attributes, but `namespace::*` must surface them
+  # as nodes whose name is the prefix ("" for the default) and whose
+  # string-value is the URI. Never produced by the parser, only by XPath
+  # evaluation over the element's in-scope bindings.
+  class NamespaceNode < Node
+    getter prefix : String?
+    getter href : String
+    getter owner : Element
+
+    def initialize(@prefix : String?, @href : String, @owner : Element)
+      @parent_node = owner
+      @doc_order = owner.doc_order
+    end
+
+    def to_xml(io : IO) : Nil
     end
   end
 

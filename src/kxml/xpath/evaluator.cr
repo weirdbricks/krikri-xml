@@ -6,13 +6,15 @@ module KXML
     class Evaluator
       @expr : Expr
       @ns_map : Hash(String, String)?
+      @vars : Hash(String, Value)?
 
-      def initialize(@expr : Expr, @ns_map = nil)
+      def initialize(@expr : Expr, @ns_map = nil, @vars = nil)
       end
 
       def self.evaluate(expr : String, context : Node | Attribute, position : Int32 = 1, size : Int32 = 1,
-                        ns_map : Hash(String, String)? = nil) : Value
-        new(Parser.parse(expr), ns_map).eval(context, position, size)
+                        ns_map : Hash(String, String)? = nil,
+                        vars : Hash(String, Value)? = nil) : Value
+        new(Parser.parse(expr), ns_map, vars).eval(context, position, size)
       end
 
       def eval(context : Node | Attribute, position : Int32, size : Int32) : Value
@@ -78,6 +80,12 @@ module KXML
         when NumberExpr
           e.value
         when VariableRef
+          if vars = @vars
+            if value = vars[e.name]?
+              return value
+            end
+            raise Error.new("undefined variable $#{e.name}", 0)
+          end
           raise Error.new("variables are not supported ($#{e.name})", 0)
         when FunctionCall
           call_function(e, ctx)
@@ -171,10 +179,25 @@ module KXML
         when :ancestor_or_self
           ancestors(node, true)
         when :namespace
-          raise Error.new("the namespace axis is not supported", 0)
+          namespace_nodes(node)
         else
           raise Error.new("bug: unknown axis", 0)
         end
+      end
+
+      # The namespace axis: the context element's in-scope bindings as
+      # synthesized NamespaceNodes, plus the implicit xml binding. Only
+      # element contexts carry namespaces. Ordered stably by prefix.
+      private def namespace_nodes(node : Node | Attribute) : NodeSet
+        elem = node.as?(Element)
+        return NodeSet.new unless elem
+        ns = elem.in_scope_namespaces
+        ns["xml"] = XML_NAMESPACE_URI unless ns.has_key?("xml")
+        nodes = ns.map do |prefix, href|
+          NamespaceNode.new(prefix, href, elem).as(Node | Attribute)
+        end
+        nodes.sort_by! { |ns_node| "#{ns_node.as(NamespaceNode).doc_order}:#{ns_node.as(NamespaceNode).prefix || ""}" }
+        nodes
       end
 
       private def descendants(node : Node, include_self : Bool) : NodeSet
@@ -265,6 +288,9 @@ module KXML
       # node tests
 
       private def apply_node_test(nodes : NodeSet, test : NodeTest, axis : Symbol, ctx_node : Node | Attribute) : NodeSet
+        if axis == :namespace
+          return apply_namespace_node_test(nodes, test)
+        end
         case test
         when TypeTest
           nodes.select do |candidate|
@@ -286,6 +312,24 @@ module KXML
           end
         else
           raise Error.new("bug: unknown node test", 0)
+        end
+      end
+
+      # On the namespace axis the node's name is its prefix ("" for the
+      # default); `*` matches any namespace node, a name matches the
+      # prefix exactly.
+      private def apply_namespace_node_test(nodes : NodeSet, test : NodeTest) : NodeSet
+        nodes.select do |node|
+          next false unless node.is_a?(NamespaceNode)
+          case test
+          when TypeTest
+            test.type == :node
+          when NameTest
+            next false unless test.prefix.nil? || test.prefix == "*"
+            test.local == "*" ? true : (node.prefix || "") == test.local
+          else
+            false
+          end
         end
       end
 
@@ -543,7 +587,16 @@ module KXML
           raise Error.new("count() requires a node-set", 0) unless arg.is_a?(NodeSet)
           arg.size.to_f
         when "id"
-          raise Error.new("id() is not supported (requires DTD ID information)", 0)
+          check_arity(e, args, 1)
+          doc = context_document(ctx.node)
+          tokens = to_string(args[0]).split
+          hits = NodeSet.new
+          tokens.each do |token|
+            if elem = find_element_by_id(doc, token)
+              hits << elem unless hits.any?(&.same?(elem))
+            end
+          end
+          XPath.sort_nodes(hits)
         when "local-name", "name", "namespace-uri"
           check_arity(e, args, 0, 1)
           if args.empty?
@@ -635,6 +688,24 @@ module KXML
         else
           raise Error.new("unknown function '#{e.name}()'", 0)
         end
+      end
+
+      # id() per section 4.1: the first element whose ID-typed attribute
+      # (registered from the DTD's ATTLIST declarations at parse time)
+      # equals the token.
+      private def find_element_by_id(doc : Document, token : String) : Element?
+        stack = doc.children.reverse
+        until stack.empty?
+          n = stack.pop.as(Node)
+          if n.is_a?(Element)
+            id_names = doc.id_attribute_names
+            n.attributes.each do |a|
+              return n if id_names.includes?(a.name) && a.value == token
+            end
+            stack.concat(n.children.reverse)
+          end
+        end
+        nil
       end
 
       private def check_arity(e : FunctionCall, args : Array(Value), min : Int32, max : Int32? = nil) : Nil
