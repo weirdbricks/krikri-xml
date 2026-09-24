@@ -59,7 +59,9 @@ module KXML
     def children : Array(Node)
       nodes = [] of Node
       nodes.concat(misc_before)
-      nodes << root if root = self.root
+      if r = @root
+        nodes << r
+      end
       nodes.concat(misc_after)
       nodes
     end

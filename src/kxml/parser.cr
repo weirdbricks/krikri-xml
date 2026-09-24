@@ -81,25 +81,38 @@ module KXML
       @lines    = [] of Int32
       @cols     = [] of Int32
 
+      @push_elem_depths = [] of Int32
+      @popped_depths = [] of {Int32, Int32}
+      property elem_depth_getter : Proc(Int32)? = nil
+
       def initialize(source : String, label : String)
-        push(source, label)
+        push(source, label, -1)
       end
 
-      def push(source : String, label : String) : Nil
+      def push(source : String, label : String, elem_depth : Int32) : Nil
         @sources << source
         @labels << label
         @positions << 0
         @lines << 1
         @cols << 0
+        @push_elem_depths << elem_depth
+      end
+
+      # Element depth recorded when the current top source was pushed;
+      # 0 for the base document.
+      def top_push_elem_depth : Int32
+        @push_elem_depths.last? || 0
+      end
+
+      # {recorded push depth, element depth at pop time} for
+      # balance-tracked sources popped by compact; drained by the parser.
+      def popped_depths : Array({Int32, Int32})
+        @popped_depths
       end
 
       # Number of pushed (entity) sources above the base document.
       def depth : Int32
         @sources.size - 1
-      end
-
-      def base_pos : Int32
-        @positions.first
       end
 
       def label : String
@@ -121,6 +134,11 @@ module KXML
           @positions.pop
           @lines.pop
           @cols.pop
+          d = @push_elem_depths.pop
+          if d >= 0
+            cur = @elem_depth_getter.try(&.call) || 0
+            @popped_depths << {d, cur}
+          end
         end
       end
 
@@ -181,13 +199,21 @@ module KXML
     @entities = {} of String => Entity
     @pes = {} of String => Entity
     @attlists = {} of String => Hash(String, AttDef)
+    @dep_graph = {} of String => Set(String)
     @ns_stack = [] of Hash(String, String?)
     @element_depth = 0
     @expanded_bytes = 0
     @text_buf : String::Builder? = nil
+    @raw_pp : Char? = nil
+    @raw_prev : Char? = nil
+    @raw_label : String? = nil
+    @raw_pp : Char? = nil
+    @raw_prev : Char? = nil
+    @raw_label : String? = nil
 
     def initialize(source : String)
       @scanner = Scanner.new(source, "document")
+      @scanner.elem_depth_getter = ->{ @element_depth }
       base = Hash(String, String?).new
       base["xml"] = XML_NAMESPACE_URI
       @ns_stack << base
@@ -305,11 +331,12 @@ module KXML
     end
 
     # Parses '#'... ';' (the '#' already consumed) and validates the
-    # codepoint against production [2] Char.
-    private def parse_char_ref_after_hash : Int32
+    # codepoint against production [2] Char. *ref_depth* is the scanner
+    # depth at the '&' so a reference cannot span entity boundaries.
+    private def parse_char_ref_after_hash(ref_depth : Int32) : Int32
       hex = false
       if x = @scanner.peek
-        if x == 'x' || x == 'X'
+        if x == 'x'
           @scanner.advance
           hex = true
         end
@@ -322,6 +349,7 @@ module KXML
       end
       digs = digits.to_s
       error("character reference contains no digits") if digs.empty?
+      error("entity references must not span entity boundaries") if @scanner.depth != ref_depth
       error("unterminated character reference (expected ';')") unless @scanner.peek == ';'
       @scanner.advance
       cp = digs.to_i(hex ? 16 : 10)
@@ -330,9 +358,11 @@ module KXML
       cp
     end
 
-    # Parses Name ';' (the '&' already consumed).
-    private def parse_entity_ref_name : String
+    # Parses Name ';' (the '&' already consumed). *ref_depth* is the
+    # scanner depth at the '&' so a reference cannot span entity boundaries.
+    private def parse_entity_ref_name(ref_depth : Int32) : String
       name = parse_name_raw
+      error("entity references must not span entity boundaries") if @scanner.depth != ref_depth
       error("unterminated entity reference (expected ';')") unless @scanner.peek == ';'
       @scanner.advance
       name
@@ -409,17 +439,20 @@ module KXML
       expect('=', "'=' in the XML declaration")
       skip_s
       version = parse_quoted_literal
-      error("unsupported XML version '#{version}' (only 1.0 is implemented)") unless version == "1.0"
-      skip_s
+      # VersionInfo ::= '1.' [0-9]+ - accept any 1.x and apply 1.0 rules.
+      error("unsupported XML version '#{version}'") unless version =~ /^1\.\d+$/
+      had_space = skip_s
       if @scanner.match?("encoding")
+        error("expected whitespace before 'encoding'") unless had_space
         skip_s
         expect('=', "'=' in the XML declaration")
         skip_s
         enc = parse_quoted_literal
         error("invalid encoding name '#{enc}'") unless valid_enc_name?(enc)
+        had_space = skip_s
       end
-      skip_s
       if @scanner.match?("standalone")
+        error("expected whitespace before 'standalone'") unless had_space
         skip_s
         expect('=', "'=' in the XML declaration")
         skip_s
@@ -462,9 +495,11 @@ module KXML
 
     private def parse_comment_rest : Comment
       b = String::Builder.new
+      start_depth = @scanner.depth
       prev : Char? = nil
       prevprev : Char? = nil
       loop do
+        error("comments must not span entity boundaries") if @scanner.depth < start_depth
         if prevprev == '-' && prev == '-'
           nxt = @scanner.peek
           if nxt == '>'
@@ -472,6 +507,7 @@ module KXML
             content = b.to_s
             content = content[0...content.size - 2]
             error("'--' is not allowed inside a comment") if content.includes?("--")
+            error("comment content must not end with '-'") if content.ends_with?('-')
             return Comment.new(content)
           elsif nxt.nil?
             error("unterminated comment")
@@ -488,8 +524,10 @@ module KXML
     end
 
     private def parse_pi_rest : ProcessingInstruction
+      start_depth = @scanner.depth
       target = parse_name_raw
       error("processing instruction target '#{target}' is reserved") if target.downcase == "xml"
+      error("processing instruction targets must not contain colons") if target.includes?(':')
       content = String::Builder.new
       c = @scanner.peek
       error("unterminated processing instruction") if c.nil?
@@ -505,6 +543,7 @@ module KXML
       end
       last_question = false
       loop do
+        error("processing instructions must not span entity boundaries") if @scanner.depth < start_depth
         d = @scanner.peek
         error("unterminated processing instruction") if d.nil?
         ch = @scanner.advance
@@ -553,8 +592,8 @@ module KXML
 
     private def validate_pubid(pub : String) : Nil
       pub.each_char do |ch|
-        ok = whitespace?(ch) || ('A' <= ch <= 'Z') || ('a' <= ch <= 'z') ||
-             ('0' <= ch <= '9') ||
+        ok = ch == ' ' || ch == '\r' || ch == '\n' ||
+             ('A' <= ch <= 'Z') || ('a' <= ch <= 'z') || ('0' <= ch <= '9') ||
              "-'()+,./:=?;!*#@$_%".includes?(ch)
         error("invalid character in public identifier") unless ok
       end
@@ -570,7 +609,8 @@ module KXML
           return
         elsif c == '%'
           @scanner.advance
-          name = parse_entity_ref_name
+          ref_depth = @scanner.depth
+          name = parse_entity_ref_name(ref_depth)
           pe = @pes[name]?
           error("parameter entity '#{name}' is not declared") if pe.nil?
           error("external parameter entities are not supported") if pe.external
@@ -580,8 +620,10 @@ module KXML
           parse_entity_decl
         elsif @scanner.match?("<!ATTLIST")
           parse_attlist_decl
-        elsif @scanner.match?("<!ELEMENT") || @scanner.match?("<!NOTATION")
-          skip_markup_decl
+        elsif @scanner.match?("<!ELEMENT")
+          parse_element_decl
+        elsif @scanner.match?("<!NOTATION")
+          parse_notation_decl
         elsif @scanner.match?("<!--")
           parse_comment_rest
         elsif @scanner.match?("<?")
@@ -590,6 +632,142 @@ module KXML
           error("expected a declaration in the internal DTD subset")
         end
       end
+    end
+
+    # [82] NotationDecl. Validated for well-formedness (name, external or
+    # public identifier, PubidChar set).
+    # [45] elementdecl with full content-model validation ([46]-[51],
+    # [53 cp], [84]-[89] in IBM numbering) so malformed content models are
+    # rejected as not well-formed.
+    private def parse_element_decl : Nil
+      require_s("after '<!ELEMENT'")
+      parse_name_raw
+      require_s("after the element name")
+      parse_contentspec
+      skip_s
+      expect('>', "'>' terminating the ELEMENT declaration")
+    end
+
+    private def check_keyword_end : Nil
+      c = @scanner.peek
+      error("invalid keyword") if c && name_char?(c)
+    end
+
+    private def parse_contentspec : Nil
+      if @scanner.match?("EMPTY") || @scanner.match?("ANY")
+        check_keyword_end
+        return
+      end
+      if (c = @scanner.peek) && c == '('
+        @scanner.advance
+        skip_s
+        if @scanner.match?("#PCDATA")
+          parse_mixed_tail
+          return
+        end
+        parse_children_tail
+        return
+      end
+      error("expected a content specification")
+    end
+
+    private def parse_occurrence_marker : Nil
+      if (m = @scanner.peek) && (m == '?' || m == '*' || m == '+')
+        @scanner.advance
+      end
+    end
+
+    private def parse_cp : Nil
+      c = @scanner.peek
+      if c == '('
+        @scanner.advance
+        skip_s
+        parse_children_tail
+      else
+        parse_name_raw
+      end
+      parse_occurrence_marker
+    end
+
+    private def parse_children_tail : Nil
+      parse_cp
+      skip_s
+      c = @scanner.peek
+      if c == ')'
+        @scanner.advance
+      elsif c == '|' || c == ','
+        sep = c.not_nil!
+        @scanner.advance
+        loop do
+          skip_s
+          parse_cp
+          skip_s
+          c2 = @scanner.peek
+          if c2 == sep
+            @scanner.advance
+          elsif c2 == ')'
+            @scanner.advance
+            break
+          else
+            error("expected '#{sep}' or ')' in the content model")
+          end
+        end
+      else
+        error("expected '|', ',' or ')' in the content model")
+      end
+      parse_occurrence_marker
+    end
+
+    private def parse_mixed_tail : Nil
+      has_names = false
+      loop do
+        had_space = skip_s
+        c = @scanner.peek
+        error("unterminated mixed content model") if c.nil?
+        if c == ')'
+          @scanner.advance
+          break
+        elsif c == '|'
+          @scanner.advance
+          skip_s
+          parse_name_raw
+          has_names = true
+        else
+          error("expected '|' or ')' in the mixed content model")
+        end
+      end
+      skip_s
+      if has_names
+        error("expected '*' after a mixed content model with names") unless @scanner.peek == '*'
+        @scanner.advance
+      elsif (m = @scanner.peek) && (m == '?' || m == '+' || m == '*')
+        error("the PCDATA-only mixed content form allows no occurrence marker") unless m == '*'
+        @scanner.advance
+      end
+    end
+
+    private def parse_notation_decl : Nil
+      require_s("after '<!NOTATION'")
+      nname = parse_name_raw
+      error("notation names must not contain colons") if nname.includes?(':')
+      require_s("after the notation name")
+      if @scanner.match?("SYSTEM")
+        require_s("after 'SYSTEM'")
+        parse_quoted_literal
+      elsif @scanner.match?("PUBLIC")
+        require_s("after 'PUBLIC'")
+        pub = parse_quoted_literal
+        validate_pubid(pub)
+        had_space = skip_s
+        if (c = @scanner.peek) && (c == '"' || c == '\'')
+          error("expected whitespace before the system identifier") unless had_space
+          parse_quoted_literal
+        end
+      else
+        error("expected 'SYSTEM' or 'PUBLIC' in the notation declaration")
+      end
+      skip_s
+      expect('>', "'>' terminating the NOTATION declaration")
     end
 
     private def skip_markup_decl : Nil
@@ -611,6 +789,47 @@ module KXML
       end
     end
 
+    # Dependency graph for entity recursion detection (WFC: No Recursion,
+    # checked at declaration time per the conformance suite's expectation).
+    private def record_entity_deps(name : String, replacement : String) : Nil
+      deps = @dep_graph[name] ||= Set(String).new
+      i = 0
+      size = replacement.bytesize
+      while i < size
+        ch, len = KXML.decode_char_at(replacement, i)
+        if ch == '&'
+          j = i + 1
+          if j < size && replacement.byte_at(j) == 0x23
+            # character reference - no dependency
+            _, ni = char_ref_in_string(replacement, j)
+            i = ni
+          else
+            name_end = replacement.index(';', j)
+            raise Error.new("bug: malformed bypassed reference", 0, 0) if name_end.nil?
+            ref = replacement[j...name_end]
+            deps << ref unless PREDEFINED_ENTITIES.has_key?(ref)
+            i = name_end + 1
+          end
+        else
+          i += len
+        end
+      end
+      path = Set(String).new([name])
+      check_entity_cycles(name, path, 0)
+    end
+
+    private def check_entity_cycles(node : String, path : Set(String), depth : Int32) : Nil
+      error("recursive entity reference involving '#{node}'") if depth > MAX_ENTITY_DEPTH
+      deps = @dep_graph[node]? || return
+      deps.each do |d|
+        next if PREDEFINED_ENTITIES.has_key?(d)
+        error("recursive entity reference involving '#{d}'") if path.includes?(d)
+        path << d
+        check_entity_cycles(d, path, depth + 1)
+        path.delete(d)
+      end
+    end
+
     private def parse_entity_decl : Nil
       require_s("after '<!ENTITY'")
       is_pe = false
@@ -620,17 +839,23 @@ module KXML
         is_pe = true
       end
       name = parse_name_raw
+      error("entity names must not contain colons") if name.includes?(':')
       require_s("after the entity name")
       table = is_pe ? @pes : @entities
       c = @scanner.peek
       if c == '"' || c == '\''
         replacement = parse_entity_value(0)
-        table[name] = Entity.new(replacement) unless table.has_key?(name)
+        unless table.has_key?(name)
+          table[name] = Entity.new(replacement)
+          record_entity_deps(name, replacement)
+        end
       else
         parse_external_id
         unparsed = false
-        skip_s
+        had_space = skip_s
         if @scanner.match?("NDATA")
+          error("expected whitespace before 'NDATA'") unless had_space
+          error("parameter entities cannot be unparsed") if is_pe
           require_s("after 'NDATA'")
           parse_name_raw
           unparsed = true
@@ -678,20 +903,18 @@ module KXML
           error("invalid reference in entity value") if nxt.nil?
           if nxt == '#'
             @scanner.advance
-            cp = parse_char_ref_after_hash
+            cp = parse_char_ref_after_hash(@scanner.depth)
             b << cp.chr
           else
-            name = parse_entity_ref_name
+            name = parse_entity_ref_name(@scanner.depth)
             b << '&' << name << ';'
           end
         elsif c == '%'
-          @scanner.advance
-          name = parse_entity_ref_name
-          pe = @pes[name]?
-          error("parameter entity '#{name}' is not declared") if pe.nil?
-          error("external parameter entities are not supported") if pe.external
-          error("parameter entity references nested too deeply") if pe_depth >= MAX_ENTITY_DEPTH
-          b << pe.replacement
+          # WFC: PEs in Internal Subset - a PE reference must not occur
+          # within a markup declaration, including inside an EntityValue.
+          # (External subsets, where PEs in values are allowed, are not
+          # fetched by this parser.)
+          error("parameter entity references cannot occur within markup declarations in the internal DTD subset")
         else
           b << @scanner.advance
         end
@@ -816,10 +1039,10 @@ module KXML
           error("invalid reference in attribute value") if nxt.nil?
           if nxt == '#'
             @scanner.advance
-            cp = parse_char_ref_after_hash
+            cp = parse_char_ref_after_hash(@scanner.depth)
             b << "&#" << cp.to_s << ';'
           else
-            name = parse_entity_ref_name
+            name = parse_entity_ref_name(@scanner.depth)
             validate_entity_ref_for_attribute(name)
             b << '&' << name << ';'
           end
@@ -904,6 +1127,7 @@ module KXML
       else
         e = @entities[name]?
         raise Error.new("bug: entity '#{name}' missing during normalization", 0, 0) if e.nil?
+        error("references to external entities are not allowed in attribute values") if e.external
         walk_entity_replacement(e.replacement, b, depth + 1)
       end
     end
@@ -1053,8 +1277,16 @@ module KXML
       end
     end
 
+    private def drain_popped_depths : Nil
+      while pair = @scanner.popped_depths.shift?
+        recorded, at_pop = pair
+        error("entity replacement text has unbalanced markup") if at_pop != recorded
+      end
+    end
+
     private def parse_content(elem : Element) : Nil
       loop do
+        drain_popped_depths
         c = @scanner.peek
         if c.nil?
           flush_text(elem)
@@ -1094,15 +1326,28 @@ module KXML
           error("invalid reference in content") if nxt.nil?
           if nxt == '#'
             @scanner.advance
-            cp = parse_char_ref_after_hash
+            cp = parse_char_ref_after_hash(@scanner.depth)
             text_buf << cp.chr
+            @raw_pp = nil
+            @raw_prev = nil
           else
-            name = parse_entity_ref_name
+            name = parse_entity_ref_name(@scanner.depth)
             expand_entity_in_content(name)
           end
         else
+          label = @scanner.label
+          if label != @raw_label
+            @raw_pp = nil
+            @raw_prev = nil
+            @raw_label = label
+          end
+          if (pp = @raw_pp) && (pv = @raw_prev) && pp == ']' && pv == ']' && @scanner.peek == '>'
+            error("']]>' is not allowed in character data")
+          end
           ch = @scanner.advance
-              text_buf << ch
+          text_buf << ch
+          @raw_pp = @raw_prev
+          @raw_prev = ch
         end
       end
     end
@@ -1111,12 +1356,18 @@ module KXML
       @text_buf ||= String::Builder.new
     end
 
+    private def reset_raw_tracking : Nil
+      @raw_pp = nil
+      @raw_prev = nil
+      @raw_label = nil
+    end
+
     private def flush_text(elem : Element) : Nil
+      reset_raw_tracking
       if buf = @text_buf
         @text_buf = nil
         s = buf.to_s
         return if s.empty?
-        error("']]>' is not allowed in character data") if s.includes?("]]>")
         last = elem.children.last?
         if last.is_a?(Text)
           last.content += s
@@ -1129,6 +1380,7 @@ module KXML
     end
 
     private def parse_end_tag(elem : Element) : Nil
+      error("entity replacement text cannot close an element opened outside it") if @element_depth <= @scanner.top_push_elem_depth
       name = parse_name_raw
       skip_s
       expect('>', "'>' terminating the end tag")
@@ -1137,9 +1389,11 @@ module KXML
 
     private def parse_cdata_rest : CData
       b = String::Builder.new
+      start_depth = @scanner.depth
       prev : Char? = nil
       prevprev : Char? = nil
       loop do
+        error("CDATA sections must not span entity boundaries") if @scanner.depth < start_depth
         if prevprev == ']' && prev == ']' && @scanner.peek == '>'
           @scanner.advance
           content = b.to_s
@@ -1156,21 +1410,24 @@ module KXML
 
     private def expand_entity_in_content(name : String) : Nil
       if rep = PREDEFINED_ENTITIES[name]?
-        push_replacement(rep, "predefined entity '#{name}'")
+        push_replacement(rep, "predefined entity '#{name}'", @element_depth)
         return
       end
       e = @entities[name]?
       error("entity '#{name}' is not declared") if e.nil?
       error("external entity '#{name}' cannot be included (external entities are not supported)") if e.external
-      push_replacement(e.replacement, "entity '#{name}'")
+      push_replacement(e.replacement, "entity '#{name}'", @element_depth)
     end
 
-    private def push_replacement(replacement : String, label : String) : Nil
+    private def push_replacement(replacement : String, label : String, elem_depth : Int32 = -1) : Nil
+      @raw_pp = nil
+      @raw_prev = nil
+      @raw_label = nil
       return if replacement.empty?
       @expanded_bytes += replacement.bytesize
       error("entity expansion exceeds the maximum total size") if @expanded_bytes > MAX_EXPANDED_BYTES
       error("entity references nested too deeply") if @scanner.depth + 1 > MAX_ENTITY_DEPTH
-      @scanner.push(replacement, label)
+      @scanner.push(replacement, label, elem_depth)
     end
 
     # ------------------------------------------------------------------
@@ -1182,12 +1439,22 @@ module KXML
         if pfx == "xmlns"
           error("the xmlns prefix cannot be redeclared") if local == "xmlns"
           error("prefixed namespace declarations cannot use an empty URI") if value.empty?
-          if local == "xml" && value != XML_NAMESPACE_URI
-            error("the xml prefix may only be bound to #{XML_NAMESPACE_URI}")
+          if local == "xml"
+            error("the xml prefix may only be bound to #{XML_NAMESPACE_URI}") unless value == XML_NAMESPACE_URI
+          elsif value == XML_NAMESPACE_URI
+            error("only the xml prefix may be bound to the xml namespace")
+          elsif value == XMLNS_NAMESPACE_URI
+            error("no prefix may be bound to the xmlns namespace")
           end
           scope[local] = value
         elsif pfx.nil? && local == "xmlns"
-          scope[""] = value.empty? ? nil : value
+          if value.empty?
+            scope[""] = nil
+          else
+            error("the xmlns namespace cannot be the default namespace") if value == XMLNS_NAMESPACE_URI
+            error("the xml namespace cannot be the default namespace") if value == XML_NAMESPACE_URI
+            scope[""] = value
+          end
         end
       end
       scope

@@ -69,12 +69,12 @@ describe KXML::Parser do
       root.children[2].as(KXML::Comment).content.should eq("d")
     end
 
-    it "accepts '--->' as a comment terminator" do
-      doc = KXML.parse(%(<root><!--a---></root>))
-      root = doc.root.should_not be_nil
-      root.children[0].as(KXML::Comment).content.should eq("a-")
+    it "accepts '-->' terminators but rejects content ending with a lone dash" do
       doc = KXML.parse(%(<root><!-- a --></root>))
       doc.root.not_nil!.children[0].as(KXML::Comment).content.should eq(" a ")
+      # A comment ending with three dashes is not well-formed (Clark
+      # xmltest not-wf-sa-070): the trailing '-' cannot fit the grammar.
+      expect_error(%(<!--a---><doc/>), "comment")
     end
 
     it "handles ']]' inside CDATA sections" do
@@ -214,7 +214,7 @@ describe KXML::Parser do
     end
 
     it "rejects ']]>' in text" do
-      expect_error(%(<root>a]]&gt;]]&gt;]]&gt;b</root>), "']]>'")
+      expect_error(%(<root>a]]>b</root>), "']]>'")
     end
 
     it "rejects ']]>' in text written literally" do
@@ -260,8 +260,10 @@ describe KXML::Parser do
       expect_error(%(<?xml version="1.0"?><root/><?xml version="1.0"?>))
     end
 
-    it "rejects an XML version other than 1.0" do
-      expect_error(%(<?xml version="1.1"?><root/>), "unsupported XML version")
+    it "accepts any 1.x XML version but rejects others" do
+      doc = KXML.parse(%(<?xml version="1.1"?><root/>))
+      doc.root.should_not be_nil
+      expect_error(%(<?xml version="2.0"?><root/>), "unsupported XML version")
     end
 
     it "rejects mismatched quotes in attribute values" do

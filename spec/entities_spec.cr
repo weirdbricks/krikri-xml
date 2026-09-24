@@ -35,16 +35,14 @@ describe KXML::Parser do
       doc.root.not_nil!.text_content.should eq("AT&T;")
     end
 
-    it "constructs replacement text per section 4.5 (the book example)" do
-      source = <<-'XML'
-        <!DOCTYPE root [
-        <!ENTITY % pub    "&#xc9;ditions Gallimard" >
-        <!ENTITY   rights "All rights reserved" >
-        <!ENTITY   book   "La Peste: Albert Camus, &#xA9; 1947 %pub;. &rights;" >
-        ]><root>&book;</root>
-        XML
+    it "constructs replacement text per section 4.5 (char refs expanded, general refs bypassed)" do
+      # The %pub; parameter-entity part of the spec's example is omitted:
+      # PE references inside EntityValues in the internal subset are
+      # forbidden by the WFC "PEs in Internal Subset" (IBM
+      # not-wf-P29-ibm29n04 in the conformance suite expects not-wf).
+      source = %(<!DOCTYPE root [<!ENTITY rights "All rights reserved"><!ENTITY book "La Peste: Albert Camus, &#xA9; 1947. &rights;">]><root>&book;</root>)
       doc = KXML.parse(source)
-      doc.root.not_nil!.text_content.should eq("La Peste: Albert Camus, \u{A9} 1947 \u{C9}ditions Gallimard. All rights reserved")
+      doc.root.not_nil!.text_content.should eq("La Peste: Albert Camus, \u{A9} 1947. All rights reserved")
     end
 
     it "handles the appendix D double-escaping example" do
@@ -70,7 +68,9 @@ describe KXML::Parser do
     end
 
     it "expands declared entities in attribute values (4.4.5)" do
-      source = %(<!DOCTYPE root [<!ENTITY % YN '"Yes"'><!ENTITY WhatHeSaid "He said %YN;">]><root a="&WhatHeSaid;"/>)
+      # General-entity variant of the 4.4.5 example: the bypassed &YN;
+      # reference expands when WhatHeSaid is used, quotes treated as data.
+      source = %(<!DOCTYPE root [<!ENTITY YN '"Yes"'><!ENTITY WhatHeSaid "He said &YN;">]><root a="&WhatHeSaid;"/>)
       doc = KXML.parse(source)
       doc.root.not_nil!["a"].should eq(%(He said "Yes"))
     end
@@ -122,7 +122,7 @@ describe KXML::Parser do
       ex = expect_raises KXML::Error do
         KXML.parse(source)
       end
-      ex.message.not_nil!.should contain("parameter entity 'pe' is not declared")
+      ex.message.not_nil!.should contain("parameter entity references cannot occur")
     end
 
     it "rejects references to external entities in content" do

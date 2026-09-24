@@ -14,7 +14,7 @@ describe KXML::Parser do
       ex = expect_raises KXML::Error do
         KXML.parse(source)
       end
-      ex.message.not_nil!.should contain("references are not allowed")
+      ex.message.not_nil!.should contain("expected a name")
     end
 
     it "applies ATTLIST defaults" do
@@ -63,16 +63,27 @@ describe KXML::Parser do
       doc.root.not_nil!.text_content.should eq("value")
     end
 
-    it "expands parameter entities inside entity values (4.4.5)" do
+    it "rejects PE references inside entity values in the internal subset (WFC)" do
+      # 4.4.5's YN example involves a PE reference inside an EntityValue;
+      # in the internal subset the WFC "PEs in Internal Subset" forbids it
+      # (IBM not-wf-P29-ibm29n04 in the conformance suite expects not-wf).
       source = %(<!DOCTYPE root [<!ENTITY % YN '"Yes"'><!ENTITY WhatHeSaid "He said %YN;">]><root>&WhatHeSaid;</root>)
-      doc = KXML.parse(source)
-      doc.root.not_nil!.text_content.should eq(%(He said "Yes"))
+      ex = expect_raises KXML::Error do
+        KXML.parse(source)
+      end
+      ex.message.not_nil!.should contain("parameter entity references cannot occur")
     end
 
-    it "supports parameter entities used inside entity values across nesting" do
+    it "rejects PE references inside entity values even when the PE was declared via an escaped percent" do
+      # The inner % must be escaped as a character reference to declare the
+      # nested PE, but any PE reference inside an EntityValue in the
+      # internal subset is still forbidden by the WFC "PEs in Internal
+      # Subset" (IBM not-wf-P29-ibm29n04 expects not-wf).
       source = %(<!DOCTYPE root [<!ENTITY % a '<!ENTITY &#37; b "y">'>%a;<!ENTITY c "%b;">]><root>&c;</root>)
-      doc = KXML.parse(source)
-      doc.root.not_nil!.text_content.should eq("y")
+      ex = expect_raises KXML::Error do
+        KXML.parse(source)
+      end
+      ex.message.not_nil!.should contain("parameter entity references cannot occur")
     end
 
     it "rejects bare '%' in entity values" do
