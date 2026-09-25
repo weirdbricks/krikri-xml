@@ -112,7 +112,12 @@ module KXML
       index = list.index(&.same?(self)) || 0
       node.parent_node = parent
       list.insert(index, node)
-      parent.document.try(&.allocate_order(node))
+      if doc = parent.document
+        # Placeholder order; the document is marked dirty and renumbers
+        # lazily before the next order-dependent read (see Document).
+        node.doc_order = 0
+        doc.mark_orders_dirty
+      end
       node
     end
   end
@@ -178,6 +183,12 @@ module KXML
     # next orders instead of paying the full-tree renumber pass. Any other
     # position falls back to renumber.
     def allocate_order_after(node : Node | Attribute, pred : Node | Attribute, prev_last : Node | Attribute) : Int32
+      if @orders_dirty
+        # Dirty orders make the caller's snapshots stale anyway; the full
+        # pass also orders the just-inserted node.
+        renumber
+        return node.doc_order
+      end
       if pred.same?(prev_last)
         # The inserted node lands after the current maximum, so its whole
         # subtree takes the next orders in sequence. Reassigning the subtree
@@ -227,6 +238,22 @@ module KXML
       n
     end
 
+    # Lazy renumbering: insertions that land before existing nodes would
+    # need a full O(n) renumber pass to keep doc_order correct, so they only
+    # mark the document dirty and hand the new node a placeholder order.
+    # The pass runs once, on demand, before the first order-dependent read
+    # (XPath evaluation; see Evaluator#eval). Order-dependent code outside
+    # XPath must not read doc_order while this flag is set.
+    @orders_dirty = false
+
+    def orders_dirty? : Bool
+      @orders_dirty
+    end
+
+    def mark_orders_dirty : Nil
+      @orders_dirty = true
+    end
+
     # Assigns doc_order to every node and attribute in document order
     # (pre-order traversal, attributes immediately after their element).
     def renumber : Nil
@@ -244,6 +271,7 @@ module KXML
       misc_after.each do |misc|
         counter = assign_order(misc, counter)
       end
+      @orders_dirty = false
     end
 
     private def assign_order(n : Node | Attribute, counter : Int32) : Int32
@@ -558,7 +586,9 @@ module KXML
     def to_xml(io : IO, pretty : Bool, depth : Int32, indent_size : Int32) : Nil
       io << '<' << name
       attributes.each do |a|
-        io << ' ' << a.name << "=\"" << KXML.escape_attribute(a.value) << '"'
+        io << ' ' << a.name << "=\""
+        KXML.escape_attribute(io, a.value)
+        io << '"'
       end
       if children.empty?
         io << "/>"
@@ -592,7 +622,7 @@ module KXML
     end
 
     def to_xml(io : IO) : Nil
-      io << KXML.escape_text(content)
+      KXML.escape_text(io, content)
     end
   end
 
@@ -677,7 +707,7 @@ module KXML
   # full scan plus a fresh String allocation per escaped character class.
   # Non-ASCII bytes are copied verbatim (a parsed DOM holds valid UTF-8, and
   # the multi-byte length follows from the lead byte alone).
-  private def self.append_escaped(builder : String::Builder, s : String, table : Array(String?)) : Nil
+  private def self.append_escaped(io : IO, s : String, table : Array(String?)) : Nil
     bytes = s.bytesize
     pos = 0
     while pos < bytes
@@ -685,14 +715,14 @@ module KXML
       if b < 0x80
         rep = table[b]
         if rep
-          builder << rep
+          io << rep
         else
-          builder.write_byte(b)
+          io.write_byte(b)
         end
         pos += 1
       else
         len = b >= 0xF0 ? 4 : (b >= 0xE0 ? 3 : 2)
-        builder.write(Slice.new(s.to_unsafe + pos, len))
+        io.write(Slice.new(s.to_unsafe + pos, len))
         pos += len
       end
     end
@@ -720,18 +750,30 @@ module KXML
     nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
   ] of String?
 
-  def self.escape_text(s : String) : String
-    return s unless s.includes?('&') || s.includes?('<') || s.includes?('>')
-    String.build(s.bytesize + 16) do |builder|
-      append_escaped(builder, s, TEXT_ESCAPE_REPLACEMENTS)
+  # Streaming variants write the escaped form straight into *io*, so
+  # serialization never materializes an intermediate escaped string.
+  def self.escape_text(io : IO, s : String) : Nil
+    if s.includes?('&') || s.includes?('<') || s.includes?('>')
+      append_escaped(io, s, TEXT_ESCAPE_REPLACEMENTS)
+    else
+      io << s
     end
   end
 
-  def self.escape_attribute(s : String) : String
-    return s unless s.includes?('&') || s.includes?('<') || s.includes?('"') ||
-                    s.includes?('\n') || s.includes?('\t')
-    String.build(s.bytesize + 16) do |builder|
-      append_escaped(builder, s, ATTRIBUTE_ESCAPE_REPLACEMENTS)
+  def self.escape_attribute(io : IO, s : String) : Nil
+    if s.includes?('&') || s.includes?('<') || s.includes?('"') ||
+       s.includes?('\n') || s.includes?('\t')
+      append_escaped(io, s, ATTRIBUTE_ESCAPE_REPLACEMENTS)
+    else
+      io << s
     end
+  end
+
+  def self.escape_text(s : String) : String
+    String.build(s.bytesize + 16) { |io| escape_text(io, s) }
+  end
+
+  def self.escape_attribute(s : String) : String
+    String.build(s.bytesize + 16) { |io| escape_attribute(io, s) }
   end
 end

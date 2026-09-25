@@ -11,3 +11,5 @@ jobs:
         run: shards install
       - name: Run specs
         run: crystal spec
+      - name: Benchmark smoke (correctness assertions)
+        run: crystal run bench/opt_bench.cr

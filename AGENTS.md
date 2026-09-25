@@ -51,15 +51,44 @@ src/kxml/xpath/evaluator.c evaluation over the KXML DOM
 Key invariants:
 
 - **Document order**: every node and attribute carries a `doc_order : Int32`
-  assigned by the parser (creation order) and maintained by the mutation API
-  (`Document#allocate_order` recomputes the max and assigns the next value).
+  assigned by the parser (creation order) and maintained by the mutation API.
   XPath node-sets are sorted and deduplicated solely via `doc_order`, so any
-  new node-creation path **must** call `allocate_order` or XPath ordering
-  breaks. `NodeSet = Array(Node | Attribute)`; attributes are first-class
-  XPath nodes.
+  new node-creation path **must** allocate orders or XPath ordering breaks.
+  `NodeSet = Array(Node | Attribute)`; attributes are first-class XPath nodes.
+- **Mutation order fast path has two non-obvious preconditions**
+  (`Document#allocate_order_after` in nodes.cr):
+  1. The caller must snapshot `Document#deepest_last` and the new node's
+     document-order predecessor *before* splicing the node into the tree.
+     After the splice, `deepest_last` descends into the freshly inserted
+     subtree (whose attributes still carry `doc_order = 0`) and the fast-path
+     check compares against the wrong node.
+  2. The fast path assigns orders to the *entire inserted subtree*
+     (`assign_order`), not just the new node - freshly built elements have
+     attributes created before they were attached, and those must be ordered
+     too.
+  `unlink` deliberately does **not** renumber: removal keeps the relative
+  order of the survivors intact, and orders may therefore contain gaps. Only
+  relative order matters (XPath compares, never counts, `doc_order`).
+  Insertions that land before existing nodes (`add_prev_sibling`) renumber
+  *lazily*: they set a placeholder order, mark the document dirty
+  (`Document#mark_orders_dirty`), and the pass runs once before the first
+  order-dependent read (`Evaluator#eval` calls `renumber` when
+  `orders_dirty?`). Any new order-dependent consumer outside XPath must
+  respect the dirty flag. `spec/roundtrip_spec.cr` runs randomized mutations
+  and asserts a renumber pass always restores strictly increasing
+  `doc_order` - treat failures there as ordering bugs, not noise.
+- **Character validation happens during scanning**: there is no separate
+  O(n) validation pass. `Scanner#advance` validates every character it
+  consumes, and the batch fast paths (`read_plain_text`, `read_attr_chunk`)
+  reject anything they cannot prove valid via `Scanner#xml_char_len_at`,
+  rewinding so the per-char path raises the precise error. Keep this
+  division of labor when touching the scanner: the batch paths must never
+  copy an unvalidated byte into the DOM.
 - **Parser is byte-driven**: `KXML.decode_char_at` (parser.cr) decodes UTF-8
   at a byte position because `String#char_at` indexes by character and would
   be wrong for the scanner. Keep the scanner operating on byte positions.
+  `decode_char_at` reads via `to_unsafe[...]` with an explicit length guard;
+  malformed sequences raise `KXML::Error`, never a foreign exception.
 - **Strict, non-recovering**: any well-formedness violation raises
   `KXML::Error` (which carries `line`, `column`, `context`). There is no
   recovery mode and none should be added.

@@ -413,6 +413,10 @@ module KXML
 
       # Consume *str* if the next characters match it (possibly across
       # entity-source boundaries); otherwise restore the exact state.
+      #
+      # Invariant: *str* is always ASCII markup ("<?xml", "<![CDATA[", "-->",
+      # ...), so the byte-compare fast path only ever consumes provably valid
+      # XML characters.
       def match?(str : String) : Bool
         # Fast path: single source, pure-ASCII str, no entity expansion
         # active - compare bytes directly with no state duplication.

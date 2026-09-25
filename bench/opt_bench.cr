@@ -61,13 +61,20 @@ NS_XML = begin
   io.to_s
 end
 
-MUT_XML = nil # mutation bench builds its own document
-
 report = [] of String
+
+# Doubles as a correctness smoke test in CI: every measured operation must
+# produce the expected result, so ordering, namespace and predicate
+# regressions fail the build instead of only shifting a timing number.
+def check(condition : Bool, message : String) : Nil
+  raise "benchmark smoke failure: #{message}" unless condition
+end
 
 # --- serialize -------------------------------------------------------------
 xml = generate_xml(4, 6, 2)
 doc = KXML.parse(xml)
+reserialized = KXML.parse(doc.to_xml)
+check(reserialized.to_xml == doc.to_xml, "serialize is stable under re-parse")
 t = measure(300) { doc.to_xml }
 report << "serialize medium      : %.4f ms/op" % (t * 1000)
 
@@ -85,6 +92,9 @@ t = measure(10) do
     root.append_child(e)
     SINK.add(1)
   end
+  check(root.elements.size == 5000, "append_child count")
+  check(KXML::XPath.evaluate_nodes("item[last()]", root).size == 1, "append_child ordering")
+  check(KXML::XPath.evaluate_nodes("item[@id = '4999']", root).size == 1, "append_child attribute order")
 end
 report << "mutate 5000 appends   : %.4f ms/op" % (t * 1000)
 
@@ -97,6 +107,10 @@ t = measure(5) do
     root.children.first.add_prev_sibling(n)
     SINK.add(1)
   end
+  check(root.elements.size == 2400, "preinsert count")
+  check(KXML::XPath.evaluate_nodes("new", root).size == 400, "preinsert ordering")
+  first_node = KXML::XPath.evaluate_nodes("*[1]", root).first
+  check(first_node.as(KXML::Element).name == "new", "preinsert position")
 end
 report << "mutate 400 preinserts : %.4f ms/op" % (t * 1000)
 
@@ -105,6 +119,7 @@ nsdoc = KXML.parse(NS_XML)
 root = nsdoc.root.as(KXML::Element)
 t = measure(20) do
   nodes = KXML::XPath.evaluate_nodes("/root/p:item[@id > '1990']", root)
+  check(nodes.size == 9, "namespaced predicate result (got #{nodes.size})")
   SINK.add(nodes.size)
 end
 report << "xpath //p:item pred   : %.4f ms/op" % (t * 1000)
@@ -112,6 +127,7 @@ report << "xpath //p:item pred   : %.4f ms/op" % (t * 1000)
 # --- comparison-heavy predicate --------------------------------------------
 t = measure(20) do
   nodes = KXML::XPath.evaluate_nodes("//q:leaf[text() = '1999']", root)
+  check(nodes.size == 1, "text() predicate result (got #{nodes.size})")
   SINK.add(nodes.size)
 end
 report << "xpath text() = '1999' : %.4f ms/op" % (t * 1000)

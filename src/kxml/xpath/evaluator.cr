@@ -18,6 +18,14 @@ module KXML
       end
 
       def eval(context : Node | Attribute, position : Int32, size : Int32) : Value
+        # Insertions before existing nodes leave placeholder doc_orders
+        # behind (lazy renumbering); refresh once here, since every
+        # order-dependent XPath path runs under eval.
+        unless context.is_a?(Attribute)
+          if doc = context.document
+            doc.renumber if doc.orders_dirty?
+          end
+        end
         eval_expr(@expr, Context.new(context, position, size))
       end
 
@@ -498,10 +506,22 @@ module KXML
 
       private def equality(plain_eq : Bool, l : Value, r : Value) : Bool
         if l.is_a?(NodeSet) && r.is_a?(NodeSet)
+          # Each side's string-values are computed once (O(n + m)) instead
+          # of once per pair - a per-evaluation memo measurably regresses
+          # comparisons over cheap nodes, so this is done locally. Equality
+          # then checks set membership; for '!=': if the right side has two
+          # different values some pair always differs, otherwise compare
+          # against the single value.
+          lvals = l.map { |a| XPath.string_value(a) }
+          rvals = r.map { |b| XPath.string_value(b) }
+          rset = Set(String).new(rvals)
           if plain_eq
-            l.any? { |a| r.any? { |b| XPath.string_value(a) == XPath.string_value(b) } }
+            lvals.any? { |lval| rset.includes?(lval) }
+          elsif rset.size <= 1
+            only = rvals.first?
+            lvals.any? { |lval| lval != only }
           else
-            l.any? { |a| r.any? { |b| XPath.string_value(a) != XPath.string_value(b) } }
+            true
           end
         elsif l.is_a?(NodeSet)
           node_set_equality(plain_eq, l, r)

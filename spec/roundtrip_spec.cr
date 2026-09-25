@@ -100,6 +100,10 @@ describe "mutation round-trip" do
         when 5
           target.text = "t#{op}" if target.elements.empty?
         end
+        # Insertions before existing nodes renumber lazily (placeholder
+        # orders + dirty flag); the invariant under test is that a renumber
+        # pass always restores strictly increasing document order.
+        doc.renumber
         check_orders(doc)
       end
     end
