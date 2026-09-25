@@ -67,8 +67,8 @@ end
 
 ## Deliberate parser policies
 
-The spec mandates behaviors; some operational limits are parser policy and
-configurable constants on `KXML::Parser`:
+The spec mandates behaviors; some operational limits are parser policy defined
+as fixed constants on `KXML::Parser`:
 
 - `MAX_ELEMENT_DEPTH` (2_048, matching libxml2's `XML_MAX_DEPTH`) - guards
   against stack exhaustion on deeply nested documents.
@@ -113,8 +113,10 @@ crystal spec
 
 The specs are organized one file per feature area (`spec/parser_spec.cr`,
 `entities_spec.cr`, `doctype_spec.cr`, `namespaces_spec.cr`,
-`normalization_spec.cr`, `mutation_spec.cr`, `xpath_spec.cr`), plus the
-W3C conformance suite (`spec/conformance_spec.cr`), which reads
+`normalization_spec.cr`, `mutation_spec.cr`, `limits_spec.cr`,
+`fuzz_spec.cr`, `realworld_spec.cr`, `roundtrip_spec.cr`, `differential_spec.cr`,
+`xpath_spec.cr`, and `xpath_corpus_spec.cr`), plus the W3C conformance suite
+(`spec/conformance_spec.cr`), which reads
 `testdata/xmlts20130923.zip` and runs every case whose expectations this
-parser can honestly check - roughly 2,000 additional cases on top of the
-unit specs.
+parser can honestly check - roughly 2,000 additional cases on top of the unit
+specs.

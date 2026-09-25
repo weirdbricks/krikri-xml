@@ -218,18 +218,16 @@ module KXML
     # children are all elements/comments/PIs get one child per line with
     # *indent_size*-space indentation; text-bearing content is inline.
     def to_xml(io : IO, pretty : Bool, indent_size : Int32 = 2) : Nil
-      body = String::Builder.new
-      misc_before.each &.to_xml(body, pretty, 0, indent_size)
+      misc_before.each &.to_xml(io, pretty, 0, indent_size)
       if d = doctype
-        d.to_xml(body)
-        body << "\n" if pretty
+        d.to_xml(io)
+        io << "\n" if pretty
       end
       if r = root
-        r.to_xml(body, pretty, 0, indent_size)
+        r.to_xml(io, pretty, 0, indent_size)
       end
-      misc_after.each &.to_xml(body, pretty, 0, indent_size)
-      body << "\n" if pretty
-      io << body.to_s
+      misc_after.each &.to_xml(io, pretty, 0, indent_size)
+      io << "\n" if pretty
     end
   end
 
