@@ -175,13 +175,6 @@ KNOWN_DIVERGENCES = {
   # This parser follows the NS-aware reading.
   "x-ibm-1-0.5-valid-P05-ibm05v02" => "colon in PI target (NS-aware reading)",
   "x-ibm-1-0.5-valid-P05-ibm05v05" => "colon in entity name (NS-aware reading)",
-  # Encoding-declaration compatibility checks require real transcoding,
-  # which this parser does not perform (input is a UTF-8 String).
-  "rmt-e2e-61"  => "declared-encoding compatibility check",
-  "hst-lhs-007" => "BOM/encoding compatibility check",
-  # Undeclared-entity severity depends on standalone/external-subset
-  # semantics this parser does not model.
-  "rmt-e3e-13" => "undeclared entity severity with PE references",
 }
 
 PITARGET_4ED = /^ibm-not-wf-P(85|86|87|88|89)-/

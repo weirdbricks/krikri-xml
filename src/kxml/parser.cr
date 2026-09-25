@@ -356,6 +356,7 @@ module KXML
     end
 
     @scanner : Scanner
+    @bom_encoding : String? = nil
     @doc = Document.new
     @entities = {} of String => Entity
     @pes = {} of String => Entity
@@ -373,6 +374,7 @@ module KXML
     @raw_pp : Char? = nil
     @raw_prev : Char? = nil
     @raw_label : String? = nil
+    @has_parameter_entity = false
     @raw_pp : Char? = nil
     @raw_prev : Char? = nil
     @raw_label : String? = nil
@@ -559,6 +561,7 @@ module KXML
 
     private def skip_bom : Nil
       if (c = @scanner.peek) && c.ord == 0xFEFF
+        @bom_encoding = "utf-8"
         @scanner.advance
       end
     end
@@ -635,6 +638,7 @@ module KXML
         skip_s
         enc = parse_quoted_literal
         error("invalid encoding name '#{enc}'") unless valid_enc_name?(enc)
+        validate_encoding_declaration(enc)
         had_space = skip_s
       end
       if @scanner.match?("standalone")
@@ -648,6 +652,15 @@ module KXML
       skip_s
       expect('?', "'?>' terminating the XML declaration")
       expect('>', "'?>' terminating the XML declaration")
+    end
+
+    private def validate_encoding_declaration(enc : String) : Nil
+      normalized = enc.downcase
+      if bom = @bom_encoding
+        error("encoding declaration '#{enc}' conflicts with the UTF-8 byte order mark") unless normalized == bom
+      elsif normalized == "utf-16" || normalized == "utf-32"
+        error("encoding '#{enc}' is incompatible with the document input")
+      end
     end
 
     private def valid_enc_name?(enc : String) : Bool
@@ -801,6 +814,7 @@ module KXML
           return
         elsif c == '%'
           @scanner.advance
+          @has_parameter_entity = true
           ref_depth = @scanner.depth
           name = parse_entity_ref_name(ref_depth)
           pe = @pes[name]?
@@ -1699,6 +1713,7 @@ module KXML
         return
       end
       e = @entities[name]?
+      return if e.nil? && @has_parameter_entity
       error("entity '#{name}' is not declared") if e.nil?
       error("external entity '#{name}' cannot be included (external entities are not supported)") if e.external?
       push_replacement(e.replacement, "entity '#{name}'", @element_depth)

@@ -93,6 +93,12 @@ describe KXML::Parser do
       doc.root.not_nil!.text_content.should eq("deep")
     end
 
+    it "treats undeclared references after parameter entities as validity errors" do
+      source = %(<!DOCTYPE foo [<!ENTITY % pe "<!ENTITY ent1 'text'>">%pe;]><foo>&ent2;</foo>)
+      doc = KXML.parse(source)
+      doc.root.not_nil!.text_content.should eq("")
+    end
+
     it "allows a bypassed reference to an undeclared entity inside an entity value" do
       # Bypassed: left as-is; only expanded if the outer entity is used
       source = %(<!DOCTYPE root [<!ENTITY e "&nope;">]><root>&e;</root>)

@@ -88,9 +88,9 @@ and runs every test file whose expectations this parser can honestly check.
 Results across the 15 sub-catalogs (James Clark xmltest, OASIS/NIST, Sun,
 IBM, Edinburgh errata-2e/3e/4e, Richard Tobin's Namespaces 1.0 + errata):
 
-- **1,668 passed** of 1,981 executed (well-formed accepted, not-wf rejected).
-- **313 documented divergences** - every one enumerated with its reason in
-  `spec/conformance_spec.cr` (`KNOWN_DIVERGENCES`). They fall into three
+- **1,671 passed** of 1,981 executed (well-formed accepted, not-wf rejected).
+- **310 documented divergences** - every one enumerated with its reason in
+  `spec/conformance_spec.cr` (`KNOWN_DIVERGENCES`). They fall into two
   classes:
   - 300 IBM PITarget tests expecting 4th-edition Letter/NameChar classes;
     this parser implements the 5th-edition `NameStartChar` production, under
@@ -99,8 +99,6 @@ IBM, Edinburgh errata-2e/3e/4e, Richard Tobin's Namespaces 1.0 + errata):
     Namespaces-aware processor must reject (the suite is self-contradictory
     here; this parser follows the NS-aware reading, matching
     rmt-ns10-042/043/044).
-  - Encoding-declaration compatibility checks, which require real
-    transcoding this parser does not perform.
 - **319 skipped** - tests that require external entities (`ENTITIES`
   parameter/both/general) or non-UTF-8 encodings, which the parser
   deliberately does not support.

@@ -94,6 +94,11 @@ describe KXML::Parser do
       doc.root.should_not be_nil
     end
 
+    it "rejects encodings incompatible with the document input" do
+      expect_error(%(<?xml version="1.0" encoding="UTF-16"?><root/>), "incompatible")
+      expect_error("\u{FEFF}<?xml version='1.0' encoding='iso-8859-1'?><root/>", "conflicts")
+    end
+
     it "parses a document with a DOCTYPE and no subset" do
       doc = KXML.parse(%(<!DOCTYPE root SYSTEM "doc.dtd"><root/>))
       dt = doc.doctype.should_not be_nil
