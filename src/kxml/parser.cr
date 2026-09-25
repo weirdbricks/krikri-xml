@@ -1420,6 +1420,7 @@ module KXML
       @scanner.advance
       raw_name = parse_name_raw
       eprefix, elocal = split_qname(raw_name)
+      elocal = raw_name unless eprefix
       elem_order = next_order
 
       raw_attrs = [] of {String, String?, String, String, Bool, Int32}
@@ -1440,6 +1441,7 @@ module KXML
           error("whitespace is required before attribute '#{c}'") unless had_space
           ap_raw = parse_name_raw
           a_pfx, a_local = split_qname(ap_raw)
+          a_local = ap_raw unless a_pfx
           skip_s
           error("expected '=' after attribute name '#{ap_raw}'") unless @scanner.peek == '='
           @scanner.advance
