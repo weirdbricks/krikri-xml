@@ -74,10 +74,6 @@ def normalize_text(sig : String) : String
   out.join("\n") + "\n"
 end
 
-# xml.cr keeps text nodes split at entity boundaries while KXML coalesces
-# adjacent text (like libxml2); merge consecutive same-depth text entries
-# so both signatures are comparable.
-
 private def dom_walk(b : String::Builder, n : XML::DOM::Node, depth : Int32) : Nil
   case n
   when XML::DOM::Element
@@ -175,7 +171,7 @@ describe "differential parsing (KXML vs XML::DOM)" do
         end
         begin
           d = dom_signature(content)
-        rescue
+        rescue XML::DOM::Error
           next # xml.cr cannot handle it; not our signal
         end
         compared += 1

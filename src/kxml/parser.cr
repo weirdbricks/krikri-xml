@@ -1391,7 +1391,22 @@ module KXML
     end
 
     private def collapse_spaces(v : String) : String
-      v.split(' ').reject(&.empty?).join(' ')
+      return "" if v.empty?
+
+      String.build do |builder|
+        pending_space = false
+        has_output = false
+        v.each_char do |char|
+          if char == ' '
+            pending_space = true
+          else
+            builder << ' ' if pending_space && has_output
+            builder << char
+            pending_space = false
+            has_output = true
+          end
+        end
+      end
     end
 
     # ------------------------------------------------------------------

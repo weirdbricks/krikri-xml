@@ -263,20 +263,47 @@ module KXML
       end
 
       private def preceding(node : Node | Attribute) : NodeSet
-        all = all_document_nodes(node)
-        ancestor_set = Set(Node).new
-        ancestor = node.is_a?(Node) ? node.parent_node : nil
+        if node.is_a?(Attribute)
+          document = node.parent_node.try(&.document)
+          return NodeSet.new unless document
+          order = XPath.order_of(node)
+          result = all_document_nodes(document).select { |candidate| XPath.order_of(candidate) < order }
+          return result.reverse
+        end
+
+        document = node.document
+        return NodeSet.new unless document
+
+        ancestors = Set(Node).new
+        ancestor = node.parent_node
         while ancestor
-          ancestor_set << ancestor
+          ancestors << ancestor
           ancestor = ancestor.parent_node
         end
+        descendants = Set(Node).new
+        collect_descendants(node, descendants)
+
         out = NodeSet.new
-        all.each do |candidate|
-          next unless XPath.order_of(candidate) < XPath.order_of(node)
-          next if ancestor_set.includes?(candidate)
-          out << candidate
+        order = XPath.order_of(node)
+        stack = document.children.to_a.reverse
+        until stack.empty?
+          current = stack.pop
+          next if current.same?(node) || descendants.includes?(current) || XPath.order_of(current) > order
+          out << current unless ancestors.includes?(current)
+          if current.is_a?(Document) || current.is_a?(Element)
+            current.children.to_a.reverse_each { |child| stack.push(child) }
+          end
         end
         out.reverse
+      end
+
+      private def collect_descendants(node : Node, result : Set(Node)) : Nil
+        if node.is_a?(Document) || node.is_a?(Element)
+          node.children.each do |child|
+            result << child
+            collect_descendants(child, result)
+          end
+        end
       end
 
       private def descendant_or_self?(ancestor : Node, node : Node) : Bool
