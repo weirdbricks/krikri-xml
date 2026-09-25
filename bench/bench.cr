@@ -67,7 +67,9 @@ struct Measurement
   end
 
   def per_op_ms : Float64
-    seconds * 1000.0 / iterations
+    # Each iteration of `measure` is a single op, and `seconds` already holds
+    # the best single-run elapsed time, so no division by the iteration count.
+    seconds * 1000.0
   end
 
   def mb_per_s(bytes : Int64) : Float64

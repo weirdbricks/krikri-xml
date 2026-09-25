@@ -62,7 +62,6 @@ module KXML
     # consumers that edit documents in place; a no-op without a parent).
     def unlink : Nil
       if parent = parent_node
-        document = parent.document
         case parent
         when Element
           parent.children.delete(self)
@@ -75,7 +74,6 @@ module KXML
           end
         end
         self.parent_node = nil
-        document.try(&.renumber)
       end
     end
 
@@ -88,9 +86,20 @@ module KXML
       node.unlink if node.parent_node
       list = parent.children
       index = list.index(&.same?(self)) || list.size - 1
+      doc = parent.document
+      if doc
+        prev_last = doc.deepest_last
+        pred = doc.deepest_last_of(self)
+      end
       node.parent_node = parent
       list.insert(index + 1, node)
-      parent.document.try(&.allocate_order(node))
+      if doc
+        if prev_last && pred
+          doc.allocate_order_after(node, pred, prev_last)
+        else
+          doc.allocate_order(node)
+        end
+      end
       node
     end
 
@@ -157,9 +166,65 @@ module KXML
     # mutations can place a new node before existing ones, so a plain
     # "max + 1" would hand out orders that contradict document order; the
     # whole document is renumbered in traversal order instead.
-    def allocate_order(node : Node) : Int32
+    def allocate_order(node : Node | Attribute) : Int32
       renumber
       node.doc_order
+    end
+
+    # Fast path for the common "append at the end" mutation: when *pred*
+    # (the node the new node follows in document order) was the document's
+    # last node *before the insertion* - *prev_last*, snapshotted by the
+    # caller before it spliced the node in - the new node simply takes the
+    # next orders instead of paying the full-tree renumber pass. Any other
+    # position falls back to renumber.
+    def allocate_order_after(node : Node | Attribute, pred : Node | Attribute, prev_last : Node | Attribute) : Int32
+      if pred.same?(prev_last)
+        # The inserted node lands after the current maximum, so its whole
+        # subtree takes the next orders in sequence. Reassigning the subtree
+        # (not just the node) is what keeps freshly built elements - whose
+        # attributes were created before the element was attached - ordered.
+        assign_order(node, prev_last.doc_order + 1)
+      else
+        renumber
+      end
+      node.doc_order
+    end
+
+    # The node holding the maximum doc_order. Order stays monotonic with
+    # document position across mutations: every insertion either renumbers
+    # or appends after the current maximum, and unlink only removes nodes
+    # (the relative order of the survivors is untouched).
+    def deepest_last : (Node | Attribute)?
+      if last = misc_after.last?
+        return deepest_last_of(last)
+      end
+      if r = @root
+        return deepest_last_of(r)
+      end
+      if d = @doctype
+        return d
+      end
+      if last = misc_before.last?
+        return deepest_last_of(last)
+      end
+      nil
+    end
+
+    # Deepest, last node of *start*'s subtree in document order: attributes
+    # order between their element and its children, and the last child's
+    # subtree precedes anything after it.
+    def deepest_last_of(start : Node | Attribute) : Node | Attribute
+      n = start
+      while n.is_a?(Element)
+        if child = n.children.last?
+          n = child
+        elsif attr = n.attributes.last?
+          return attr
+        else
+          return n
+        end
+      end
+      n
     end
 
     # Assigns doc_order to every node and attribute in document order
@@ -181,7 +246,7 @@ module KXML
       end
     end
 
-    private def assign_order(n : Node, counter : Int32) : Int32
+    private def assign_order(n : Node | Attribute, counter : Int32) : Int32
       n.doc_order = counter
       counter += 1
       if n.is_a?(Element)
@@ -272,9 +337,25 @@ module KXML
         last.content += node.content
         return last
       end
-      node.parent_node = self
-      children << node
-      document.try(&.allocate_order(node))
+      doc = document
+      if doc
+        # Snapshot the current maximum and the new node's document-order
+        # predecessor BEFORE splicing the node in - afterwards deepest_last
+        # would descend into the new node (whose fresh attributes still
+        # carry order 0).
+        prev_last = doc.deepest_last
+        pred = children.last? ? doc.deepest_last_of(children.last) : (attributes.last? || self)
+        node.parent_node = self
+        children << node
+        if pl = prev_last
+          doc.allocate_order_after(node, pred, pl)
+        else
+          doc.allocate_order(node)
+        end
+      else
+        node.parent_node = self
+        children << node
+      end
       node
     end
 
@@ -294,20 +375,45 @@ module KXML
         prefix = find_ns_prefix(href)
         unless prefix
           prefix = "ns#{Element.next_clark_number}"
-          attributes << Attribute.new("xmlns:#{prefix}", "xmlns", prefix, XMLNS_NAMESPACE_URI, href, true)
+          append_attribute_ordered(Attribute.new("xmlns:#{prefix}", "xmlns", prefix, XMLNS_NAMESPACE_URI, href, true))
         end
         pos = attributes.index { |a| a.local_name == local && a.namespace_uri == href }
         if pos
-          attributes[pos] = Attribute.new("#{prefix}:#{local}", prefix, local, href, value, true)
+          replacement = Attribute.new("#{prefix}:#{local}", prefix, local, href, value, true)
+          replacement.doc_order = attributes[pos].doc_order
+          attributes[pos] = replacement
         else
-          attributes << Attribute.new("#{prefix}:#{local}", prefix, local, href, value, true)
+          append_attribute_ordered(Attribute.new("#{prefix}:#{local}", prefix, local, href, value, true))
         end
       else
         pos = attributes.index { |a| a.prefix.nil? && a.local_name == name }
         if pos
-          attributes[pos] = Attribute.new(name, nil, name, nil, value, true)
+          replacement = Attribute.new(name, nil, name, nil, value, true)
+          replacement.doc_order = attributes[pos].doc_order
+          attributes[pos] = replacement
         else
-          attributes << Attribute.new(name, nil, name, nil, value, true)
+          append_attribute_ordered(Attribute.new(name, nil, name, nil, value, true))
+        end
+      end
+    end
+
+    # Appends an attribute at the end of the attribute list and gives it a
+    # document order. The attribute lands right after the element's current
+    # last attribute (or the element itself), so the order allocation can
+    # take the O(depth) fast path when that spot is also the document's
+    # document-order maximum.
+    private def append_attribute_ordered(attr : Attribute) : Nil
+      doc = document
+      if doc
+        prev_last = doc.deepest_last
+        pred = attributes.last? || self
+      end
+      attributes << attr
+      if doc
+        if prev_last && pred
+          doc.allocate_order_after(attr, pred, prev_last)
+        else
+          doc.allocate_order(attr)
         end
       end
     end
@@ -567,12 +673,65 @@ module KXML
     end
   end
 
+  # Single-pass byte-driven escaping; the gsub chains this replaces paid one
+  # full scan plus a fresh String allocation per escaped character class.
+  # Non-ASCII bytes are copied verbatim (a parsed DOM holds valid UTF-8, and
+  # the multi-byte length follows from the lead byte alone).
+  private def self.append_escaped(builder : String::Builder, s : String, table : Array(String?)) : Nil
+    bytes = s.bytesize
+    pos = 0
+    while pos < bytes
+      b = s.byte_at(pos)
+      if b < 0x80
+        rep = table[b]
+        if rep
+          builder << rep
+        else
+          builder.write_byte(b)
+        end
+        pos += 1
+      else
+        len = b >= 0xF0 ? 4 : (b >= 0xE0 ? 3 : 2)
+        builder.write(Slice.new(s.to_unsafe + pos, len))
+        pos += len
+      end
+    end
+  end
+
+  private TEXT_ESCAPE_REPLACEMENTS = [
+    nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+    nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+    nil, nil, nil, nil, nil, nil, "&amp;", nil, nil, nil, nil, nil, nil, nil, nil, nil,
+    nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, "&lt;", nil, "&gt;", nil,
+    nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+    nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+    nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+    nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+  ] of String?
+
+  private ATTRIBUTE_ESCAPE_REPLACEMENTS = [
+    nil, nil, nil, nil, nil, nil, nil, nil, nil, "&#9;", "&#10;", nil, nil, nil, nil, nil,
+    nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+    nil, nil, "&quot;", nil, nil, nil, "&amp;", nil, nil, nil, nil, nil, nil, nil, nil, nil,
+    nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, "&lt;", nil, nil, nil,
+    nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+    nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+    nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+    nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+  ] of String?
+
   def self.escape_text(s : String) : String
-    s.gsub('&', "&amp;").gsub('<', "&lt;").gsub('>', "&gt;")
+    return s unless s.includes?('&') || s.includes?('<') || s.includes?('>')
+    String.build(s.bytesize + 16) do |builder|
+      append_escaped(builder, s, TEXT_ESCAPE_REPLACEMENTS)
+    end
   end
 
   def self.escape_attribute(s : String) : String
-    s.gsub('&', "&amp;").gsub('<', "&lt;").gsub('"', "&quot;")
-      .gsub('\n', "&#10;").gsub('\t', "&#9;")
+    return s unless s.includes?('&') || s.includes?('<') || s.includes?('"') ||
+                    s.includes?('\n') || s.includes?('\t')
+    String.build(s.bytesize + 16) do |builder|
+      append_escaped(builder, s, ATTRIBUTE_ESCAPE_REPLACEMENTS)
+    end
   end
 end

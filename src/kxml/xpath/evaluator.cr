@@ -402,7 +402,27 @@ module KXML
         if ns_map = @ns_map
           return ns_map[test.prefix]? || ""
         end
-        in_scope_namespaces(ctx_node)[test.prefix]? || ""
+        # Walk upward and stop at the nearest declaration of this one
+        # prefix: nearer bindings win, so no full in-scope map is needed.
+        # (xmlns="" undeclares the default namespace for its subtree -
+        # innermost declaration wins even when it is the undeclaration.)
+        if prefix = test.prefix
+          n : Node? = ctx_node.is_a?(Document) ? ctx_node.root : ctx_node
+          while n
+            if n.is_a?(Element)
+              n.attributes.each do |attr|
+                if attr.prefix == "xmlns"
+                  return attr.value if attr.local_name == prefix
+                elsif attr.prefix.nil? && attr.local_name == "xmlns" && prefix.empty?
+                  return attr.value.empty? ? "" : attr.value
+                end
+              end
+            end
+            n = n.parent_node
+          end
+          return prefix == "xml" ? XML_NAMESPACE_URI : ""
+        end
+        ""
       end
 
       # In-scope namespaces of *node*: xmlns/xmlns:* attributes collected
@@ -528,11 +548,14 @@ module KXML
         ln = l.is_a?(NodeSet) ? nil : to_number(l)
         rn = r.is_a?(NodeSet) ? nil : to_number(r)
         if l.is_a?(NodeSet) && r.is_a?(NodeSet)
-          l.any? do |left_node|
-            an = XPath.string_to_number(XPath.string_value(left_node))
-            r.any? do |right_node|
-              bn = XPath.string_to_number(XPath.string_value(right_node))
-              num_rel(op, an, bn)
+          # Numbers derived once per node (O(n + m)) instead of once per
+          # pair; only the float comparisons remain quadratic, and those
+          # short-circuit through any?.
+          lnums = l.map { |a| XPath.string_to_number(XPath.string_value(a)) }
+          rnums = r.map { |b| XPath.string_to_number(XPath.string_value(b)) }
+          lnums.any? do |lnum|
+            rnums.any? do |rnum|
+              num_rel(op, lnum, rnum)
             end
           end
         elsif l.is_a?(NodeSet)

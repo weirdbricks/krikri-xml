@@ -3,23 +3,35 @@ require "./nodes"
 module KXML
   # Decodes the UTF-8 character at byte position *pos* in *s* and returns
   # it with its byte length. String#char_at indexes by character, which is
-  # wrong for a byte-driven scanner.
+  # wrong for a byte-driven scanner. Reads go through unsafe_byte_at with
+  # an explicit length guard (cheaper than checked byte_at on the hot path),
+  # and malformed sequences raise KXML::Error instead of letting the raw
+  # codepoint escape as a foreign exception.
   def self.decode_char_at(s : String, pos : Int) : {Char, Int32}
-    b0 = s.byte_at(pos).to_i
+    b0 = s.to_unsafe[pos].to_i
     if b0 < 0x80
       {b0.chr, 1}
-    elsif b0 < 0xE0
-      b1 = s.byte_at(pos + 1).to_i
-      {(((b0 & 0x1F) << 6) | (b1 & 0x3F)).chr, 2}
-    elsif b0 < 0xF0
-      b1 = s.byte_at(pos + 1).to_i
-      b2 = s.byte_at(pos + 2).to_i
-      {(((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F)).chr, 3}
     else
-      b1 = s.byte_at(pos + 1).to_i
-      b2 = s.byte_at(pos + 2).to_i
-      b3 = s.byte_at(pos + 3).to_i
-      {(((b0 & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F)).chr, 4}
+      len = b0 >= 0xF0 ? 4 : (b0 >= 0xE0 ? 3 : 2)
+      if pos + len > s.bytesize
+        raise Error.new("invalid UTF-8 byte sequence", 1, pos, "document")
+      end
+      cp = if len == 2
+             ((b0 & 0x1F) << 6) | (s.to_unsafe[pos + 1].to_i & 0x3F)
+           elsif len == 3
+             b1 = s.to_unsafe[pos + 1].to_i
+             b2 = s.to_unsafe[pos + 2].to_i
+             ((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F)
+           else
+             b1 = s.to_unsafe[pos + 1].to_i
+             b2 = s.to_unsafe[pos + 2].to_i
+             b3 = s.to_unsafe[pos + 3].to_i
+             ((b0 & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F)
+           end
+      if cp > 0x10FFFF || (0xD800 <= cp <= 0xDFFF)
+        raise Error.new("invalid UTF-8 byte sequence", 1, pos, "document")
+      end
+      {cp.chr, len}
     end
   end
 
@@ -243,16 +255,35 @@ module KXML
         run = brackets
         while pos < bytes
           b = src.byte_at(pos)
-          if b == 0x3C || b == 0x26 # '<' '&'
-            break
-          elsif b == 0x5D # ']'
-            run = run >= 2 ? 2 : run + 1
-            pos += 1
-          elsif b == 0x3E && run >= 2 # '>' closing a "]]>"
-            break
-          else
+          if b >= 0x20
+            if b >= 0x80
+              len = xml_char_len_at(src, pos)
+              if len == 0
+                # Not provably valid: rewind so the per-char path decodes
+                # it and raises the precise error if it is indeed invalid.
+                @positions[0] = start
+                return
+              end
+              run = 0
+              pos += len
+            elsif b == 0x3C || b == 0x26 # '<' '&'
+              break
+            elsif b == 0x5D # ']'
+              run = run >= 2 ? 2 : run + 1
+              pos += 1
+            elsif b == 0x3E && run >= 2 # '>' closing a "]]>"
+              break
+            else
+              run = 0
+              pos += 1
+            end
+          elsif b == 0x9 || b == 0xA # tab, LF
             run = 0
             pos += 1
+          else
+            # Control character: rewind, the per-char path raises.
+            @positions[0] = start
+            return
           end
         end
         return "" if pos == start
@@ -274,8 +305,24 @@ module KXML
         qb = quote.ord
         while pos < bytes
           b = src.byte_at(pos)
-          break if b == qb || b == 0x3C || b == 0x26 # quote '<' '&'
-          pos += 1
+          if b >= 0x20
+            if b >= 0x80
+              len = xml_char_len_at(src, pos)
+              if len == 0
+                @positions[0] = start
+                return
+              end
+              pos += len
+            else
+              break if b == qb || b == 0x3C || b == 0x26 # quote '<' '&'
+              pos += 1
+            end
+          elsif b == 0x9 || b == 0xA # tab, LF are valid attribute data
+            pos += 1
+          else
+            @positions[0] = start
+            return
+          end
         end
         return "" if pos == start
         @positions[0] = pos
@@ -305,10 +352,63 @@ module KXML
         si = @sources.size - 1
         pos = @positions.last
         ch, len = KXML.decode_char_at(@sources[si], pos)
+        validate_char(ch)
         @positions[si] = pos + len
-        # Prefetch disabled for bisection
+        # Prefetch disabled for bisection (re-measured: neutral on small
+        # documents, ~10% slower on large ones)
         @cache_src = -1
         ch
+      end
+
+      # Character validation lives here instead of a separate O(n) pass over
+      # the whole document: every character the parser consumes goes through
+      # advance (or through the batch fast paths, which hand anything
+      # questionable to this path via xml_char_len_at), so each character is
+      # checked exactly once on the way in.
+      private def validate_char(ch : Char) : Nil
+        cp = ch.ord
+        return if cp == 0x9 || cp == 0xA || cp == 0xD ||
+                  (0x20 <= cp <= 0xD7FF) || (0xE000 <= cp <= 0xFFFD) ||
+                  (0x10000 <= cp <= 0x10FFFF)
+        raise KXML::Error.new("invalid XML character U+#{cp.to_s(16)}", line, column, label)
+      end
+
+      # Byte length of the UTF-8 sequence at byte *pos* in *src* when it
+      # encodes a valid XML 1.0 character, or 0 when the byte must be left
+      # to the validating per-char path (malformed UTF-8, control chars,
+      # surrogates, noncharacters). Lets the batch fast paths run without
+      # ever copying an unvalidated byte into the DOM.
+      private def xml_char_len_at(src : String, pos : Int32) : Int32
+        b0 = src.byte_at(pos)
+        return 0 if b0 < 0x20 && b0 != 0x9 && b0 != 0xA && b0 != 0xD
+        return 1 if b0 < 0x80
+        bytes = src.bytesize
+        if b0 < 0xC0
+          0
+        elsif b0 < 0xE0
+          return 0 if pos + 1 >= bytes
+          b1 = src.byte_at(pos + 1)
+          return 0 unless b1 & 0xC0 == 0x80
+          cp = ((b0 & 0x1F) << 6) | (b1 & 0x3F)
+          cp >= 0x80 ? 2 : 0
+        elsif b0 < 0xF0
+          return 0 if pos + 2 >= bytes
+          b1 = src.byte_at(pos + 1)
+          b2 = src.byte_at(pos + 2)
+          return 0 unless (b1 & 0xC0 == 0x80) && (b2 & 0xC0 == 0x80)
+          cp = ((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F)
+          return 0 if cp < 0x800 || (0xD800 <= cp <= 0xDFFF) || cp == 0xFFFE || cp == 0xFFFF
+          3
+        else
+          return 0 if b0 > 0xF4 || pos + 3 >= bytes
+          b1 = src.byte_at(pos + 1)
+          b2 = src.byte_at(pos + 2)
+          b3 = src.byte_at(pos + 3)
+          return 0 unless (b1 & 0xC0 == 0x80) && (b2 & 0xC0 == 0x80) && (b3 & 0xC0 == 0x80)
+          cp = ((b0 & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F)
+          return 0 if cp < 0x10000 || cp > 0x10FFFF
+          4
+        end
       end
 
       # Consume *str* if the next characters match it (possibly across
@@ -388,24 +488,26 @@ module KXML
     end
 
     def self.parse(source : String) : Document
-      normalized = normalize_eol(source)
-      validate_chars(normalized)
-      new(normalized).parse
+      new(normalize_eol(source)).parse
     end
 
     # 2.11: #xD#xA and any lone #xD become #xA on input, before parsing.
+    # Single pass; the gsub pair this replaces allocated two intermediates.
     def self.normalize_eol(source : String) : String
       return source unless source.includes?('\r')
-      source.gsub("\r\n", "\n").gsub('\r', '\n')
-    end
-
-    private def self.validate_chars(source : String) : Nil
-      byte_pos = 0
-      source.each_char do |char|
-        unless valid_codepoint?(char.ord)
-          raise Error.new("invalid XML character U+#{char.ord.to_s(16)}", 1, byte_pos, "document")
+      String.build(source.bytesize) do |builder|
+        pos = 0
+        bytes = source.bytesize
+        while pos < bytes
+          b = source.byte_at(pos)
+          if b == 0x0D
+            builder << '\n'
+            pos += (pos + 1 < bytes && source.byte_at(pos + 1) == 0x0A) ? 2 : 1
+          else
+            builder.write_byte(b)
+            pos += 1
+          end
         end
-        byte_pos += char.bytesize
       end
     end
 
@@ -1235,6 +1337,17 @@ module KXML
         # Fast path: batch plain bytes between references.
         if chunk = @scanner.read_attr_chunk(quote)
           b << chunk unless chunk.empty?
+        else
+          # The batch path bailed on a byte it cannot validate (or entity
+          # sources are active). Consume one character through the checked
+          # per-char path so the loop always makes progress; invalid
+          # characters raise here.
+          first = @scanner.peek
+          error("unterminated attribute value") if first.nil?
+          unless first == quote || first == '<' || first == '&'
+            @scanner.advance
+            b << first
+          end
         end
         c = @scanner.peek
         error("unterminated attribute value") if c.nil?
@@ -1438,6 +1551,7 @@ module KXML
       elem_order = next_order
 
       raw_attrs = [] of {String, String?, String, String, Bool, Int32}
+      seen_attr_names = Set(String).new
       self_closing = false
       loop do
         had_space = skip_s
@@ -1465,7 +1579,7 @@ module KXML
           @scanner.advance
           raw_value = parse_att_literal(q.as(Char))
           value = normalize_att_value(raw_value, attribute_type(raw_name, ap_raw))
-          error("duplicate attribute '#{ap_raw}'") if raw_attrs.any? { |raw| raw[0] == ap_raw }
+          error("duplicate attribute '#{ap_raw}'") unless seen_attr_names.add?(ap_raw)
           raw_attrs << {ap_raw, a_pfx, a_local, value, true, next_order}
         end
       end
@@ -1789,12 +1903,9 @@ module KXML
           a.doc_order = order
           a
         end
-        attributes.each_with_index do |a, i|
-          j = i + 1
-          while j < attributes.size
-            error("duplicate attribute '#{a.name}'") if attributes[j].name == a.name
-            j += 1
-          end
+        seen = Set(String).new
+        attributes.each do |a|
+          error("duplicate attribute '#{a.name}'") unless seen.add?(a.name)
         end
         return attributes
       end
