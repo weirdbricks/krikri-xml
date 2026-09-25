@@ -995,9 +995,9 @@ module KXML
             _, ni = char_ref_in_string(replacement, j)
             i = ni
           else
-            name_end = replacement.index(';', j)
+            name_end = replacement.byte_index(';', j)
             raise Error.new("bug: malformed bypassed reference", 0, 0) if name_end.nil?
-            ref = replacement[j...name_end]
+            ref = replacement.byte_slice(j, name_end - j)
             deps << ref unless PREDEFINED_ENTITIES.has_key?(ref)
             i = name_end + 1
           end
@@ -1262,9 +1262,9 @@ module KXML
             _, ni = char_ref_in_string(raw, j)
             i = ni
           else
-            name_end = raw.index(';', j)
+            name_end = raw.byte_index(';', j)
             error("unterminated entity reference in an attribute default") if name_end.nil?
-            name = raw[j...name_end]
+            name = raw.byte_slice(j, name_end - j)
             unless PREDEFINED_ENTITIES.has_key?(name) || @entities.has_key?(name)
               error("entity '#{name}' must be declared before it is referenced in an attribute default")
             end
@@ -1297,9 +1297,9 @@ module KXML
             b << cp.chr
             i = ni
           else
-            name_end = raw.index(';', j)
+            name_end = raw.byte_index(';', j)
             raise Error.new("bug: malformed reference in normalized literal", 0, 0) if name_end.nil?
-            append_entity_in_attribute(raw[j...name_end], b, 0)
+            append_entity_in_attribute(raw.byte_slice(j, name_end - j), b, 0)
             i = name_end + 1
           end
         elsif whitespace?(ch)
@@ -1369,7 +1369,7 @@ module KXML
       i = hash_index + 1
       hex = false
       if i < s.size
-        c = s.char_at(i)
+        c = KXML.decode_char_at(s, i)[0]
         if c == 'x' || c == 'X'
           hex = true
           i += 1
@@ -1384,7 +1384,7 @@ module KXML
       end
       error("character reference contains no digits") if i == start
       error("unterminated character reference") if i >= s.bytesize || KXML.decode_char_at(s, i)[0] != ';'
-      cp = s[start...i].to_i(hex ? 16 : 10)
+      cp = s.byte_slice(start, i - start).to_i(hex ? 16 : 10)
       error("character reference out of range") if cp > 0x10FFFF
       error("character reference to an invalid XML character") unless Parser.valid_codepoint?(cp)
       {cp, i + 1}
