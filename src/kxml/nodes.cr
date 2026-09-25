@@ -62,10 +62,20 @@ module KXML
     # consumers that edit documents in place; a no-op without a parent).
     def unlink : Nil
       if parent = parent_node
-        if parent.responds_to?(:children)
-          parent.children.reject!(&.same?(self))
+        document = parent.document
+        case parent
+        when Element
+          parent.children.delete(self)
+        when Document
+          if parent.root.same?(self)
+            parent.root = nil
+          else
+            parent.misc_before.delete(self)
+            parent.misc_after.delete(self)
+          end
         end
         self.parent_node = nil
+        document.try(&.renumber)
       end
     end
 
@@ -383,10 +393,16 @@ module KXML
             n = nil
             next
           end
-          siblings = parent.as(Element).elements
-          same = siblings.count { |sibling| sibling.name == node.name }
-          pos = siblings.index(&.same?(node)).as(Int32)
-          segments.unshift(same > 1 ? "#{node.name}[#{pos + 1}]" : node.name)
+          same = 0
+          position = 0
+          element_index = 0
+          parent.as(Element).children.each do |sibling|
+            next unless sibling.is_a?(Element)
+            same += 1 if sibling.name == node.name
+            position = element_index if sibling.same?(node)
+            element_index += 1
+          end
+          segments.unshift(same > 1 ? "#{node.name}[#{position + 1}]" : node.name)
           n = parent
         when Attribute
           segments.unshift("@#{node.name}")

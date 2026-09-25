@@ -29,6 +29,15 @@ describe KXML do
       root.to_xml.should eq("<r><a/><x/><y/><c/></r>")
     end
 
+    it "unlinks document-level nodes" do
+      doc = KXML.parse("<!--before--><r/><?pi after?>")
+      doc.misc_before[0].unlink
+      doc.misc_before.should be_empty
+      doc.root.not_nil!.unlink
+      doc.root.should be_nil
+      doc.to_xml.should eq("<?pi after?>")
+    end
+
     it "sets text content, replacing the child list" do
       doc = KXML.parse("<r><a>old<extra/></a></r>")
       a = doc.root.not_nil!.elements[0]

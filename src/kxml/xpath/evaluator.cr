@@ -160,7 +160,7 @@ module KXML
         end
         case axis
         when :child
-          node.is_a?(Document) || node.is_a?(Element) ? node.children.map(&.as(Node | Attribute)).to_a : NodeSet.new
+          node.is_a?(Document) || node.is_a?(Element) ? node.children.map { |child| child.as(Node | Attribute) } : NodeSet.new
         when :descendant
           descendants(node, false)
         when :parent
@@ -208,12 +208,12 @@ module KXML
       private def descendants(node : Node, include_self : Bool) : NodeSet
         out = NodeSet.new
         out << node if include_self
-        stack = node.is_a?(Document) || node.is_a?(Element) ? node.children.to_a.reverse : [] of Node
+        stack = node.is_a?(Document) || node.is_a?(Element) ? node.children.reverse : [] of Node
         until stack.empty?
           n = stack.pop
           out << n
           if n.is_a?(Document) || n.is_a?(Element)
-            n.children.to_a.reverse.each { |child| stack.push(child) }
+            n.children.reverse.each { |child| stack.push(child) }
           end
         end
         out
@@ -291,7 +291,7 @@ module KXML
           next if current.same?(node) || descendants.includes?(current) || XPath.order_of(current) > order
           out << current unless ancestors.includes?(current)
           if current.is_a?(Document) || current.is_a?(Element)
-            current.children.to_a.reverse_each { |child| stack.push(child) }
+            current.children.reverse_each { |child| stack.push(child) }
           end
         end
         out.reverse

@@ -497,12 +497,13 @@ module KXML
     end
 
     private def split_qname(raw : String) : {String?, String}
-      return {nil, raw} unless raw.includes?(':')
-      parts = raw.split(':')
-      if parts.size > 2 || parts.any?(&.empty?)
-        error("invalid name '#{raw}'")
-      end
-      parts.size == 2 ? {parts[0], parts[1]} : {nil, raw}
+      colon = raw.index(':')
+      return {nil, raw} unless colon
+      error("invalid name '#{raw}'") if raw.index(':', colon + 1)
+      prefix = raw[0...colon]
+      local = raw[(colon + 1)..]
+      error("invalid name '#{raw}'") if prefix.empty? || local.empty?
+      {prefix, local}
     end
 
     # Parses '#'... ';' (the '#' already consumed) and validates the
