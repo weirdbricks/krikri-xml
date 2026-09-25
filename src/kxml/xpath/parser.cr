@@ -307,7 +307,11 @@ module KXML
       private def parse_path : Expr
         tok = current
         if tok.kind == TokenKind::Slash || tok.kind == TokenKind::SlashSlash
-          absolute = tok.kind == TokenKind::Slash
+          # Both abbreviations start at the document node: '/' is the bare
+          # absolute root step, and '//' abbreviates
+          # /descendant-or-self::node()/ (section 2.5), so a leading '//' is
+          # an absolute path even though its first token is not '/'.
+          absolute = true
           advance
           steps = [] of Step
           # A leading '//' abbreviates /descendant-or-self::node()/

@@ -36,7 +36,10 @@ reference.
   through an optional `vars` binding map passed to `evaluate` /
   `evaluate_nodes`; the namespace axis works via synthesized namespace
   nodes; `id()` resolves ID attributes declared in the internal DTD subset.
-  Unknown variables and syntax errors raise `KXML::XPath::Error`.
+  Unknown variables and syntax errors raise `KXML::XPath::Error`. Name
+  tests follow XPath 1.0 section 2.3: an unprefixed node test matches only
+  no-namespace nodes (the default `xmlns` declaration is not used); pass
+  an explicit `ns_map` to resolve expression prefixes.
 
 Not implemented (yet):
 

@@ -111,13 +111,16 @@ describe KXML::XPath do
       eval_nodes("book/title").size.should eq(3)
     end
 
-    it "matches unprefixed names against the default namespace" do
-      d = KXML.parse(%(<r xmlns="urn:d"><a/><p:b xmlns:p="urn:p"/></r>))
+    it "matches unprefixed names only against no-namespace elements" do
+      # XPath 1.0 section 2.3: an unprefixed node test has a null namespace
+      # URI; the default namespace declared with xmlns is not used.
+      d = KXML.parse(%(<r xmlns="urn:d"><a/><c xmlns=""/><p:b xmlns:p="urn:p"/></r>))
       r = d.root.not_nil!
-      eval_nodes("*", r).size.should eq(2)
-      eval_nodes("a", r).size.should eq(1)
+      eval_nodes("*", r).size.should eq(3)   # wildcard matches any namespace
+      eval_nodes("a", r).size.should eq(0)   # a is in urn:d, test is null-ns
+      eval_nodes("c", r).size.should eq(1)   # c has no namespace
       eval_nodes("p:b", r).size.should eq(0) # p is not in scope at r (declared on b itself)
-      eval_nodes("b", r).size.should eq(0)   # 'b' is in the default (urn:d) namespace
+      eval_nodes("b", r).size.should eq(0)
     end
 
     it "supports node type tests" do

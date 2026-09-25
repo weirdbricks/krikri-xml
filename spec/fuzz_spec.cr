@@ -7,7 +7,7 @@ require "./spec_helper"
 
 private def fuzz_parse(input : String, label : String) : Nil
   KXML.parse(input)
-rescue e : KXML::Error
+rescue KXML::Error
   # Expected: strict rejection. All good.
 rescue e
   raise "fuzz crash on #{label}: #{e.class}: #{e.message}\n#{input.inspect}"
@@ -55,8 +55,8 @@ private def rand_char(rng : Random) : UInt8
   table.bytes[rng.rand(table.size)]
 end
 
-SEEDS    = ["xml", "xpath", "entities", "mutation", "namespaces", "doctype"]
-MUTANTS  = 300
+SEEDS   = ["xml", "xpath", "entities", "mutation", "namespaces", "doctype"]
+MUTANTS = 300
 
 describe "fuzzing" do
   it "raises KXML::Error (or parses) on mutated well-formed documents" do

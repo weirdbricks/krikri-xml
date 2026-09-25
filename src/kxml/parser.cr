@@ -34,7 +34,7 @@ module KXML
     # call stack overflows. Stack overflow testing shows nesting dies around
     # depth ~6,000 on an 8 MB stack; 2,048 (libxml2's XML_MAX_DEPTH) leaves a
     # wide safety margin across platforms.
-    MAX_ELEMENT_DEPTH  =     2_048
+    MAX_ELEMENT_DEPTH  =      2_048
     MAX_ENTITY_DEPTH   =         64
     MAX_EXPANDED_BYTES = 10_000_000
 
@@ -1663,7 +1663,9 @@ module KXML
           @scanner.advance
           content = b.to_s
           content = content[0...content.size - 2]
-          return CData.new(content)
+          cdata = CData.new(content)
+          cdata.doc_order = next_order
+          return cdata
         end
         c = @scanner.peek
         error("unterminated CDATA section") if c.nil?

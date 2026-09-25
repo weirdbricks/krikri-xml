@@ -140,9 +140,14 @@ module KXML
           # than self; other node kinds yield empty sets for most axes.
           list = axis_nodes(step.axis, ctx_node)
           list = apply_node_test(list, step.test, step.axis, ctx_node)
+          # Predicates take effect per context node: the proximity position
+          # in a predicate is the node's position within the node-set
+          # selected from THIS context node (section 2.4), so para[2]
+          # selects the second para of each chapter, not the second para
+          # overall.
+          list = apply_predicates(list, step.predicates, REVERSE_AXES.includes?(step.axis))
           results.concat(list)
         end
-        results = apply_predicates(results, step.predicates, REVERSE_AXES.includes?(step.axis))
         XPath.sort_nodes(results)
       end
 
@@ -347,45 +352,50 @@ module KXML
           true
         else
           return false unless node_uri == uri
+          return true if test.local == "*"
           XPath.local_name_of(n) == test.local
         end
       end
 
       # Resolves the namespace URI implied by a name test on the given
-      # axis: the in-scope namespaces of the context node, where an
-      # unprefixed name test uses the default namespace (or no namespace).
+      # axis. XPath 1.0 section 2.3: an unprefixed QName in a node test
+      # expands to a null namespace URI - the default namespace declared
+      # with xmlns is NOT used (the same way attribute names are expanded).
+      # Prefixed tests resolve the prefix from the expression context's
+      # in-scope namespace declarations, or exclusively from an explicit
+      # namespace map when one was passed.
       private def resolve_test_uri(test : NameTest, ctx_node : Node | Attribute, principal : Bool) : String
-        # libxml2 mode (an explicit namespace map was passed): prefixes
-        # resolve exclusively from the map and unprefixed name tests match
-        # only no-namespace nodes (libxml2 XPath has no default-namespace
-        # concept).
-        if ns_map = @ns_map
-          return "" if principal || test.prefix == "*" || ctx_node.is_a?(Attribute)
-          return "" if test.prefix.nil?
-          return ns_map[test.prefix]? || ""
-        end
-        # Unprefixed name tests use the in-scope default namespace - except
-        # on the attribute axis, where unprefixed attributes have no
-        # namespace regardless of the default.
         if test.prefix.nil?
-          return "" if principal
-          ns = ctx_node.is_a?(Node) ? in_scope_namespaces(ctx_node) : Hash(String, String).new
-          return ns[""]? || ""
+          # Unprefixed (including bare '*'): null namespace, i.e. '*' with
+          # no prefix matches elements in any namespace and named unprefixed
+          # tests match only no-namespace nodes.
+          return ""
         end
         return "" if test.prefix == "*" || ctx_node.is_a?(Attribute)
+        if ns_map = @ns_map
+          return ns_map[test.prefix]? || ""
+        end
         in_scope_namespaces(ctx_node)[test.prefix]? || ""
       end
 
       # In-scope namespaces of *node*: xmlns/xmlns:* attributes collected
-      # from the nearest element upward (nearer bindings win).
+      # from the nearest element upward (nearer bindings win). The document
+      # node declares nothing itself; for it (and absolute paths evaluated
+      # against it) the document element's bindings are used, since
+      # expressions addressed at the document still need the prefixes the
+      # document declares.
       private def in_scope_namespaces(node : Node) : Hash(String, String)
         chain = [] of Element
-        n : Node? = node
+        n : Node? = node.is_a?(Document) ? node.root : node
         while n
           chain << n if n.is_a?(Element)
           n = n.parent_node
         end
         ns = Hash(String, String).new
+        # The xml prefix is bound to the XML namespace before any
+        # declarations (Namespaces in XML section 3); it cannot be
+        # overridden.
+        ns["xml"] = XML_NAMESPACE_URI
         chain.reverse_each do |element|
           element.attributes.each do |attr|
             if attr.prefix == "xmlns"

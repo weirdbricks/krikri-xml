@@ -89,9 +89,10 @@ describe KXML do
       ns = {"p" => "urn:p"} of String => String
       KXML::XPath.evaluate_nodes("*", root, ns_map: ns).size.should eq(2)
       KXML::XPath.evaluate_nodes("p:b", root, ns_map: ns).size.should eq(1)
-      # libxml2 semantics: unprefixed tests only match no-namespace nodes
+      # XPath 1.0 section 2.3: unprefixed tests only match no-namespace
+      # nodes, with or without an explicit map (a is in the default ns)
       KXML::XPath.evaluate_nodes("a", root, ns_map: ns).size.should eq(0)
-      KXML::XPath.evaluate_nodes("a", root).size.should eq(1)
+      KXML::XPath.evaluate_nodes("a", root).size.should eq(0)
     end
   end
 end
