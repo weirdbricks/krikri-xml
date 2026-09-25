@@ -7,5 +7,7 @@ jobs:
     container: crystallang/crystal:1.21.0-alpine
     steps:
       - uses: actions/checkout@v4
+      - name: Install shards
+        run: shards install
       - name: Run specs
         run: crystal spec
