@@ -17,7 +17,9 @@ etc.) and do not consult their behavior as authority; the spec decides.
 ```sh
 crystal spec                          # full test suite (the only required check)
 crystal spec spec/xpath_spec.cr       # single spec file
-ameba                                 # lint (dev dependency, ~> 1.7.0)
+shards install                        # needed once before ameba
+crystal lib/ameba/bin/ameba.cr        # lint (ameba is not on PATH)
+crystal tool format src spec          # formatter; run before committing
 crystal run bench/bench.cr --release  # benchmark vs ysbaddaden/xml.cr
 ```
 
