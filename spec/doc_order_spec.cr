@@ -60,21 +60,61 @@ describe "document order" do
     50.times { |i| a.add_next_sibling(doc.create_element("s#{i}")) }
     assert_increasing(element_orders(doc))
     names = doc.root.as(KXML::Element).elements.map(&.name)
-    # Each insert lands directly after the anchor, so repeated inserts stack
-    # in reverse (libxml2 xmlAddNextSibling semantics).
-    names.first(51).should eq(["a"] + (0...50).to_a.reverse.map { |i| "s#{i}" })
+    names.first(51).should eq(["a"] + (0...50).map { |i| "s#{i}" })
+  end
+
+  it "chains repeated add_next_sibling inserts after the previous one" do
+    doc = KXML.parse("<root><a/><b/></root>")
+    root = doc.root.as(KXML::Element)
+    a = root.elements[0]
+    a.add_next_sibling(doc.create_element("x1"))
+    a.add_next_sibling(doc.create_element("x2"))
+    a.add_next_sibling(doc.create_element("x3"))
+    names = root.elements.map(&.name)
+    names.should eq(["a", "x1", "x2", "x3", "b"])
+    assert_increasing(element_orders(doc))
+    KXML::XPath.evaluate_nodes("x2", doc.root.as(KXML::Element)).size.should eq(1)
+  end
+
+  it "falls back to the anchor when the chained node is removed" do
+    doc = KXML.parse("<root><a/><b/></root>")
+    root = doc.root.as(KXML::Element)
+    a = root.elements[0]
+    x1 = doc.create_element("x1")
+    a.add_next_sibling(x1)
+    x1.unlink
+    a.add_next_sibling(doc.create_element("x2"))
+    names = root.elements.map(&.name)
+    names.should eq(["a", "x2", "b"])
+    assert_increasing(element_orders(doc))
+  end
+
+  it "keeps the chained run contiguous when another node was inserted in between" do
+    doc = KXML.parse("<root><a/><b/></root>")
+    root = doc.root.as(KXML::Element)
+    a = root.elements[0]
+    b = root.elements[1]
+    a.add_next_sibling(doc.create_element("x1"))
+    # Another insertion lands directly after the anchor through a different
+    # path; the next chained insert still follows the previous chain node,
+    # keeping the run contiguous.
+    b.add_prev_sibling(doc.create_element("y1"))
+    a.add_next_sibling(doc.create_element("x2"))
+    names = root.elements.map(&.name)
+    names.should eq(["a", "x1", "x2", "y1", "b"])
+    assert_increasing(element_orders(doc))
   end
 
   it "renumbers lazily for add_prev_sibling and restores increasing order" do
     doc = KXML.parse("<root><a/><b/></root>")
     root = doc.root.as(KXML::Element)
-    30.times { |i| root.children.first.add_prev_sibling(doc.create_element("p#{i}")) }
+    anchor = root.children.first
+    30.times { |i| anchor.add_prev_sibling(doc.create_element("p#{i}")) }
     doc.orders_dirty?.should be_true
-    # Insertions keep appending before the first child in insertion order.
+    # A fixed anchor accumulates preinserts in insertion order (each lands
+    # directly before the anchor).
     names = root.elements.map(&.name)
-    # Each insert lands directly before the first child, so repeated
-    # inserts stack in reverse.
-    names.should eq((0...30).to_a.reverse.map { |i| "p#{i}" } + ["a", "b"])
+    names.should eq((0...30).map { |i| "p#{i}" } + ["a", "b"])
     # XPath evaluation is the order-dependent read: it must renumber first.
     nodes = KXML::XPath.evaluate_nodes("p19", doc.root.as(KXML::Element))
     nodes.size.should eq(1)

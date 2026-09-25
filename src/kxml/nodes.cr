@@ -34,6 +34,11 @@ module KXML
     # document node itself.
     property doc_order : Int32 = 0
 
+    # Last node inserted via add_next_sibling on this anchor, so repeated
+    # calls accumulate in insertion order. Only trusted while it is still
+    # the anchor's immediate next sibling (checked at insert time).
+    @last_next_insert : Node? = nil
+
     def document : Document?
       node : Node = self
       while p = node.parent_node
@@ -78,21 +83,26 @@ module KXML
     end
 
     # Moves *node* (removing it from any existing parent first) to just
-    # after this node among the parent's children - libxml2's
-    # xmlAddNextSibling move semantics.
+    # after this node among the parent's children. Repeated calls on the
+    # same anchor accumulate in insertion order: each new node chains after
+    # the previous insertion while that node is still the anchor's immediate
+    # next sibling. (libxml2's xmlAddNextSibling would reverse the run; this
+    # deviation is deliberate.)
     def add_next_sibling(node : Node) : Node
       parent = parent_node
       raise Error.new("cannot add a sibling to a parentless node", 0, 0) unless parent.is_a?(Element)
       node.unlink if node.parent_node
       list = parent.children
       index = list.index(&.same?(self)) || list.size - 1
+      pos, order_anchor = next_insert_position(list, index, parent)
+      @last_next_insert = node
       doc = parent.document
       if doc
         prev_last = doc.deepest_last
-        pred = doc.deepest_last_of(self)
+        pred = doc.deepest_last_of(order_anchor)
       end
       node.parent_node = parent
-      list.insert(index + 1, node)
+      list.insert(pos, node)
       if doc
         if prev_last && pred
           doc.allocate_order_after(node, pred, prev_last)
@@ -101,6 +111,25 @@ module KXML
         end
       end
       node
+    end
+
+    # Insert position and document-order predecessor for an add_next_sibling
+    # call: directly after the anchor, or after the previously chained node
+    # when it still lives in the same parent (insertion-order accumulation).
+    private def next_insert_position(list : Array(Node), index : Int32, parent : Element) : {Int32, Node | Attribute}
+      pos = index + 1
+      anchor : Node | Attribute = self
+      if prev = @last_next_insert
+        if pos < list.size && list[pos].same?(prev)
+          # Still the immediate next sibling: chain directly (cheap check).
+          return {pos + 1, prev}
+        elsif prev.parent_node.same?(parent) && (prev_index = list.index(&.same?(prev)))
+          # The chain node moved within the same parent: keep the run
+          # contiguous by inserting after it.
+          return {prev_index + 1, prev}
+        end
+      end
+      {pos, anchor}
     end
 
     # Moves *node* to just before this node (xmlAddPrevSibling semantics).

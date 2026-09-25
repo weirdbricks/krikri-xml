@@ -154,7 +154,13 @@ Ameba exceptions are deliberate and commented:
   misc_after`); it is not a stored list. Mutations go through the explicit
   mutation API (`append_child`, `add_next_sibling`, `add_prev_sibling`,
   `unlink`, `text=`, `set_attribute`, `delete_attribute`) which mirrors
-  libxml2 move semantics, not by pushing onto arrays directly.
+  libxml2 move semantics, not by pushing onto arrays directly. One
+  deliberate deviation: repeated `add_next_sibling` calls on the same anchor
+  accumulate in insertion order (chaining after the previous insert while
+  it stays in the same parent), where libxml2's xmlAddNextSibling would
+  reverse the run. `add_prev_sibling` on a fixed anchor already preserves
+  insertion order; a *moving* anchor (e.g. `children.first` re-evaluated
+  each iteration) stacks in reverse by construction.
 - `Element#[]` and `#[]?` both return `String?`; prefer `#[]?` in new code
   for clarity.
 - Clark notation (`{uri}local`) is accepted by `create_element` and
