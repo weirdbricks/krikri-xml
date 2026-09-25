@@ -29,7 +29,12 @@ module KXML
   # no DTD validation). Raises `KXML::Error` on any well-formedness
   # violation, mirroring lxml's non-recovering behavior.
   class Parser
-    MAX_ELEMENT_DEPTH  =     10_000
+    # Element nesting is recursive (parse_element <-> parse_content), so the
+    # limit must stay low enough that the guard raises KXML::Error before the
+    # call stack overflows. Stack overflow testing shows nesting dies around
+    # depth ~6,000 on an 8 MB stack; 2,048 (libxml2's XML_MAX_DEPTH) leaves a
+    # wide safety margin across platforms.
+    MAX_ELEMENT_DEPTH  =     2_048
     MAX_ENTITY_DEPTH   =         64
     MAX_EXPANDED_BYTES = 10_000_000
 

@@ -18,19 +18,25 @@ reference.
 - Strict, non-recovering well-formedness parsing (like lxml: any
   well-formedness violation raises).
 - DOM tree (`Document`, `Element`, `Text`, `CData`, `Comment`,
-  `ProcessingInstruction`, `DocumentType`).
+  `ProcessingInstruction`, `DocumentType`) with a mutation API
+  (`append_child`, `add_next_sibling`, `add_prev_sibling`, `unlink`,
+  `text=`, `set_attribute`, `delete_attribute`) mirroring libxml2 move
+  semantics.
 - Full internal DTD subset processing: ENTITY/ENTITY % declarations,
   ATTLIST defaults (with per-type attribute-value normalization), and the
   4.4/4.5 reference treatment (Included / Included in literal / Bypassed /
   Forbidden) exactly as specified.
 - Namespaces in XML 1.0 (default namespace, prefixed bindings, undeclaring,
   conflict detection).
-- Basic `to_xml` serialization.
+- `to_xml` serialization, with a `pretty` mode mirroring libxml2's
+  `XML::SaveOptions::FORMAT`.
 - XPath 1.0 evaluation (`KXML::XPath`), implemented from
   [REC-xpath-19991116](https://www.w3.org/TR/1999/REC-xpath-19991116/) and
-  covered by `spec/xpath_spec.cr`. Deliberate limitations, raised as
-  `KXML::XPath::Error`: variable references (`$x`), the namespace axis,
-  and `id()` (requires DTD ID information).
+  covered by `spec/xpath_spec.cr`. Variable references (`$name`) resolve
+  through an optional `vars` binding map passed to `evaluate` /
+  `evaluate_nodes`; the namespace axis works via synthesized namespace
+  nodes; `id()` resolves ID attributes declared in the internal DTD subset.
+  Unknown variables and syntax errors raise `KXML::XPath::Error`.
 
 Not implemented (yet):
 
@@ -61,8 +67,8 @@ end
 The spec mandates behaviors; some operational limits are parser policy and
 configurable constants on `KXML::Parser`:
 
-- `MAX_ELEMENT_DEPTH` (10_000) - guards against stack exhaustion on deeply
-  nested documents.
+- `MAX_ELEMENT_DEPTH` (2_048, matching libxml2's `XML_MAX_DEPTH`) - guards
+  against stack exhaustion on deeply nested documents.
 - `MAX_ENTITY_DEPTH` (64) and `MAX_EXPANDED_BYTES` (10M) - guards against
   billion-laughs attacks. The spec permits a processor to impose limits.
 - XML version `1.1` documents are rejected (this is a 1.0 processor).
@@ -101,3 +107,11 @@ IBM, Edinburgh errata-2e/3e/4e, Richard Tobin's Namespaces 1.0 + errata):
 ```sh
 crystal spec
 ```
+
+The specs are organized one file per feature area (`spec/parser_spec.cr`,
+`entities_spec.cr`, `doctype_spec.cr`, `namespaces_spec.cr`,
+`normalization_spec.cr`, `mutation_spec.cr`, `xpath_spec.cr`), plus the
+W3C conformance suite (`spec/conformance_spec.cr`), which reads
+`testdata/xmlts20130923.zip` and runs every case whose expectations this
+parser can honestly check - roughly 2,000 additional cases on top of the
+unit specs.
