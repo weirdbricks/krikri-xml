@@ -1,5 +1,5 @@
 name: krikri-xml
-version: 0.1.1
+version: 0.2.0
 
 description: |
   Clean-room XML 1.0 (Fifth Edition) parser in pure Crystal.
