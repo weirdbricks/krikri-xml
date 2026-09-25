@@ -143,18 +143,47 @@ module KXML
       Text.new(content)
     end
 
-    # Monotonic document order for mutation-created nodes.
+    # Monotonic document order for mutation-created nodes. Structural
+    # mutations can place a new node before existing ones, so a plain
+    # "max + 1" would hand out orders that contradict document order; the
+    # whole document is renumbered in traversal order instead.
     def allocate_order(node : Node) : Int32
-      max = 0
-      stack = [self.as(Node)]
-      until stack.empty?
-        n = stack.pop
-        max = n.doc_order if n.doc_order > max
-        stack.concat(n.children) if n.is_a?(Element)
+      renumber
+      node.doc_order
+    end
+
+    # Assigns doc_order to every node and attribute in document order
+    # (pre-order traversal, attributes immediately after their element).
+    def renumber : Nil
+      counter = 0
+      misc_before.each do |misc|
+        counter = assign_order(misc, counter)
       end
-      max += 1
-      node.doc_order = max
-      max
+      if d = @doctype
+        d.doc_order = counter
+        counter += 1
+      end
+      if r = @root
+        counter = assign_order(r, counter)
+      end
+      misc_after.each do |misc|
+        counter = assign_order(misc, counter)
+      end
+    end
+
+    private def assign_order(n : Node, counter : Int32) : Int32
+      n.doc_order = counter
+      counter += 1
+      if n.is_a?(Element)
+        n.attributes.each do |attr|
+          attr.doc_order = counter
+          counter += 1
+        end
+        n.children.each do |child|
+          counter = assign_order(child, counter)
+        end
+      end
+      counter
     end
 
     def children : Array(Node)
@@ -226,9 +255,15 @@ module KXML
     # mutation API
 
     # Appends *node* as the last child (moving it out of any existing
-    # parent first - libxml2's xmlAddChild move semantics).
+    # parent first - libxml2's xmlAddChild move semantics). Adjacent text
+    # nodes are coalesced, mirroring xmlAddChild, so a mutated document
+    # re-parses to the same tree it serializes to.
     def append_child(node : Node) : Node
       node.unlink if node.parent_node
+      if node.is_a?(Text) && (last = children.last?) && last.is_a?(Text)
+        last.content += node.content
+        return last
+      end
       node.parent_node = self
       children << node
       document.try(&.allocate_order(node))

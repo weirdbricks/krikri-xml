@@ -8,6 +8,7 @@ Lint/NotNil:
   Excluded:
   - spec/conformance_spec.cr
   - spec/fuzz_spec.cr
+  - spec/roundtrip_spec.cr
   - spec/xpath_corpus_spec.cr
   - spec/doctype_spec.cr
   - spec/mutation_spec.cr
@@ -30,4 +31,5 @@ Metrics/CyclomaticComplexity:
   - src/kxml/xpath/parser.cr
   - spec/conformance_spec.cr
   - spec/fuzz_spec.cr
+  - spec/roundtrip_spec.cr
   - spec/xpath_corpus_spec.cr
