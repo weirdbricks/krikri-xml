@@ -21,7 +21,9 @@ reference.
   `ProcessingInstruction`, `DocumentType`) with a mutation API
   (`append_child`, `add_next_sibling`, `add_prev_sibling`, `unlink`,
   `text=`, `set_attribute`, `delete_attribute`) mirroring libxml2 move
-  semantics.
+  semantics, with one deliberate deviation: repeated `add_next_sibling`
+  calls on the same anchor accumulate in insertion order (libxml2 would
+  reverse the run).
 - Full internal DTD subset processing: ENTITY/ENTITY % declarations,
   ATTLIST defaults (with per-type attribute-value normalization), and the
   4.4/4.5 reference treatment (Included / Included in literal / Bypassed /
@@ -111,7 +113,8 @@ crystal spec
 
 The specs are organized one file per feature area (`spec/parser_spec.cr`,
 `entities_spec.cr`, `doctype_spec.cr`, `namespaces_spec.cr`,
-`normalization_spec.cr`, `mutation_spec.cr`, `limits_spec.cr`,
+`normalization_spec.cr`, `mutation_spec.cr`, `doc_order_spec.cr`,
+`limits_spec.cr`,
 `fuzz_spec.cr`, `realworld_spec.cr`, `roundtrip_spec.cr`, `differential_spec.cr`,
 `xpath_spec.cr`, and `xpath_corpus_spec.cr`), plus the W3C conformance suite
 (`spec/conformance_spec.cr`), which reads
