@@ -585,10 +585,18 @@ module KXML
       end
     end
 
-    @@clark_counter = 0
+    # Synthetic `nsN` prefixes must be unique across every caller, and the
+    # parser may be driven from multiple threads (preview_mt), so this is
+    # an atomic fetch-and-add rather than a bare class-variable increment.
+    # A lost update would only skip a number, but two callers receiving the
+    # same number could hand a nested element a prefix that shadows an
+    # ancestor's binding for a different URI.
+    @@clark_counter = Atomic(Int32).new(0)
 
     def self.next_clark_number : Int32
-      @@clark_counter += 1
+      # `Atomic#add` returns the previous value; +1 keeps the historical
+      # post-increment semantics (first number is 1).
+      @@clark_counter.add(1) + 1
     end
 
     def text_content : String
