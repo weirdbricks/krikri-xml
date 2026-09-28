@@ -1,4 +1,3 @@
-require "spec"
 require "./spec_helper"
 
 # Fuzzing: the parser's core promise is that *any* input either parses or

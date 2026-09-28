@@ -1,4 +1,3 @@
-require "spec"
 require "./spec_helper"
 
 # Real-world document corpus: well-known XML files from production
@@ -23,11 +22,12 @@ DOCUMENTS = [
 ]
 
 describe "real-world corpus" do
-  DOCUMENTS.each do |file, root_name, min_elements|
-    it "parses and round-trips #{file}" do
+  {% for entry, i in DOCUMENTS %}
+    it {{ "parses and round-trips " + entry[0] }} do
+      file, root_name, min_elements = DOCUMENTS[{{ i }}]
       source = File.read(File.join(REALWORLD_DIR, file))
       doc = KXML.parse(source)
-      doc.root.not_nil!.name.should eq(root_name)
+      assert_equal root_name, doc.root.not_nil!.name
 
       # Count elements via XPath and via traversal: must agree.
       by_xpath = KXML::XPath.evaluate("count(//*)", doc.root.not_nil!)
@@ -38,38 +38,39 @@ describe "real-world corpus" do
         walked += 1 if n.is_a?(KXML::Element)
         n.children.each { |child| stack << child if child.is_a?(KXML::Element) } if n.is_a?(KXML::Element)
       end
-      by_xpath.should eq(walked.to_f)
-      walked.should be >= min_elements
+      assert_equal walked.to_f, by_xpath
+      assert walked >= min_elements
 
       # Round-trip: re-parsing the serialization yields a byte-identical
       # serialization (the parser must not be lossy on well-formed input).
       xml1 = doc.to_xml
       xml2 = KXML.parse(xml1).to_xml
-      xml2.should eq(xml1)
+      assert_equal xml1, xml2
 
       # The re-parsed tree must have the same number of elements.
-      KXML::XPath.evaluate("count(//*)", KXML.parse(xml1).root.not_nil!).should eq(by_xpath)
+      assert_equal by_xpath, KXML::XPath.evaluate("count(//*)", KXML.parse(xml1).root.not_nil!)
     end
 
-    it "gives consistent XPath results on #{file}" do
+    it {{ "gives consistent XPath results on " + entry[0] }} do
+      file = DOCUMENTS[{{ i }}][0]
       doc = KXML.parse(File.read(File.join(REALWORLD_DIR, file)))
       root = doc.root.not_nil!
       # local-name() of every element via XPath must match traversal.
       nodes = KXML::XPath.evaluate_nodes("//*", root)
       nodes.each do |node|
-        KXML::XPath.evaluate("name(.)", node).should eq(node.as(KXML::Element).name)
+        assert_equal node.as(KXML::Element).name, KXML::XPath.evaluate("name(.)", node)
       end
       # Document order must be strictly increasing along the node-set.
       orders = nodes.map &.doc_order
-      orders.should eq(orders.sort)
-      orders.uniq.size.should eq(orders.size)
+      assert_equal orders.sort, orders
+      assert_equal orders.size, orders.uniq.size
     end
-  end
+  {% end %}
 
   it "rejects the deliberately-malformed real-world file with a position" do
     source = File.read(File.join(REALWORLD_DIR, "maven-pom.xml"))
     truncated = source[0, source.size // 2]
     ex = expect_error(truncated)
-    ex.line.should be > 0
+    assert ex.line > 0
   end
 end

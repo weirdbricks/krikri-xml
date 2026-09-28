@@ -1,4 +1,3 @@
-require "spec"
 require "./spec_helper"
 
 # Property-style tests for the mutation API + serializer: apply sequences of
@@ -129,9 +128,9 @@ describe "mutation round-trip" do
       end
       xml1 = doc.to_xml
       reparsed = KXML.parse(xml1)
-      structural_signature(reparsed).should eq(structural_signature(doc))
+      assert_equal structural_signature(doc), structural_signature(reparsed)
       xml2 = reparsed.to_xml
-      xml2.should eq(xml1)
+      assert_equal xml1, xml2
     end
   end
 
@@ -147,7 +146,7 @@ describe "mutation round-trip" do
     reparsed_root = KXML.parse(xml).root.not_nil!
     moved = reparsed_root.elements.flat_map(&.elements).find { |found| found.name == "p:a" }
     moved = moved.not_nil!
-    KXML::XPath.evaluate("namespace-uri(.)", moved).should eq("urn:p")
+    assert_equal "urn:p", KXML::XPath.evaluate("namespace-uri(.)", moved)
   end
 
   it "unlinked nodes disappear from serialization and XPath" do
@@ -155,8 +154,8 @@ describe "mutation round-trip" do
     root = doc.root.not_nil!
     victim = root.elements[1] # <b>
     victim.unlink
-    doc.to_xml.should_not contain("<b")
-    KXML::XPath.evaluate_nodes("//b", root).size.should eq(0)
-    victim.parent_node.should be_nil
+    refute_includes doc.to_xml, "<b"
+    assert_equal 0, KXML::XPath.evaluate_nodes("//b", root).size
+    assert_nil victim.parent_node
   end
 end

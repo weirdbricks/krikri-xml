@@ -4,35 +4,35 @@ describe KXML::Parser do
   describe "entities" do
     it "expands predefined entities in text" do
       doc = KXML.parse(%(<root>&lt;&gt;&amp;&apos;&quot;</root>))
-      doc.root.not_nil!.text_content.should eq("<>&'\"")
+      assert_equal "<>&'\"", doc.root.not_nil!.text_content
     end
 
     it "expands numeric and hex character references" do
       doc = KXML.parse(%(<root>&#65;&#x42;&#x1F600;</root>))
-      doc.root.not_nil!.text_content.should eq("AB" + 0x1F600.chr)
+      assert_equal "AB" + 0x1F600.chr, doc.root.not_nil!.text_content
     end
 
     it "preserves character references for whitespace in text" do
       doc = KXML.parse(%(<root>a&#9;b&#10;c&#13;d</root>))
-      doc.root.not_nil!.text_content.should eq("a\tb\nc\rd")
+      assert_equal "a\tb\nc\rd", doc.root.not_nil!.text_content
     end
 
     it "expands declared internal entities" do
       doc = KXML.parse(%(<!DOCTYPE root [<!ENTITY e "value">]><root>&e;</root>))
-      doc.root.not_nil!.text_content.should eq("value")
+      assert_equal "value", doc.root.not_nil!.text_content
     end
 
     it "re-parses markup inside entity replacement text (spec appendix D)" do
       doc = KXML.parse(%(<!DOCTYPE root [<!ENTITY e "<p>hi</p>">]><root>&e;</root>))
       root = doc.root.not_nil!
       p_elem = root.elements[0]
-      p_elem.name.should eq("p")
-      p_elem.text_content.should eq("hi")
+      assert_equal "p", p_elem.name
+      assert_equal "hi", p_elem.text_content
     end
 
     it "keeps the ampersand from an expanded reference as data (4.4.2)" do
       doc = KXML.parse(%(<!DOCTYPE root [<!ENTITY e "AT&amp;T;">]><root>&e;</root>))
-      doc.root.not_nil!.text_content.should eq("AT&T;")
+      assert_equal "AT&T;", doc.root.not_nil!.text_content
     end
 
     it "constructs replacement text per section 4.5 (char refs expanded, general refs bypassed)" do
@@ -42,29 +42,29 @@ describe KXML::Parser do
       # not-wf-P29-ibm29n04 in the conformance suite expects not-wf).
       source = %(<!DOCTYPE root [<!ENTITY rights "All rights reserved"><!ENTITY book "La Peste: Albert Camus, &#xA9; 1947. &rights;">]><root>&book;</root>)
       doc = KXML.parse(source)
-      doc.root.not_nil!.text_content.should eq("La Peste: Albert Camus, \u{A9} 1947. All rights reserved")
+      assert_equal "La Peste: Albert Camus, \u{A9} 1947. All rights reserved", doc.root.not_nil!.text_content
     end
 
     it "handles the appendix D double-escaping example" do
       source = %(<!DOCTYPE root [<!ENTITY example "<p>An ampersand (&#38;#38;) may be escaped numerically (&#38;#38;#38;) or with a general entity (&amp;amp;).</p>">]><root>&example;</root>)
       doc = KXML.parse(source)
       p_elem = doc.root.not_nil!.elements[0]
-      p_elem.text_content.should eq("An ampersand (&) may be escaped numerically (&#38;) or with a general entity (&amp;).")
+      assert_equal "An ampersand (&) may be escaped numerically (&#38;) or with a general entity (&amp;).", p_elem.text_content
     end
 
     it "uses the first declaration when an entity is declared twice" do
       doc = KXML.parse(%(<!DOCTYPE root [<!ENTITY e "first"><!ENTITY e "second">]><root>&e;</root>))
-      doc.root.not_nil!.text_content.should eq("first")
+      assert_equal "first", doc.root.not_nil!.text_content
     end
 
     it "expands the empty entity to nothing" do
       doc = KXML.parse(%(<!DOCTYPE root [<!ENTITY e "">]><root>a&e;b</root>))
-      doc.root.not_nil!.text_content.should eq("ab")
+      assert_equal "ab", doc.root.not_nil!.text_content
     end
 
     it "expands predefined entities in attribute values" do
       doc = KXML.parse(%(<root a="&lt;&amp;"/>))
-      doc.root.not_nil!["a"].should eq("<&")
+      assert_equal "<&", doc.root.not_nil!["a"]
     end
 
     it "expands declared entities in attribute values (4.4.5)" do
@@ -72,87 +72,87 @@ describe KXML::Parser do
       # reference expands when WhatHeSaid is used, quotes treated as data.
       source = %(<!DOCTYPE root [<!ENTITY YN '"Yes"'><!ENTITY WhatHeSaid "He said &YN;">]><root a="&WhatHeSaid;"/>)
       doc = KXML.parse(source)
-      doc.root.not_nil!["a"].should eq(%(He said "Yes"))
+      assert_equal %(He said "Yes"), doc.root.not_nil!["a"]
     end
 
     it "treats quotes in expanded replacement text as data (4.4.5)" do
       source = %(<!DOCTYPE root [<!ENTITY EndAttr "27'">]><root a='a-&EndAttr;-b'/>)
       doc = KXML.parse(source)
-      doc.root.not_nil!["a"].should eq("a-27'-b")
+      assert_equal "a-27'-b", doc.root.not_nil!["a"]
     end
 
     it "applies 3.3.3 to entities recursively in attribute values" do
       source = %(<!DOCTYPE root [<!ENTITY ws "a b">]><root a="&ws;"/>)
       doc = KXML.parse(source)
-      doc.root.not_nil!["a"].should eq("a b")
+      assert_equal "a b", doc.root.not_nil!["a"]
     end
 
     it "expands entities recursively in content" do
       source = %(<!DOCTYPE root [<!ENTITY a "&b;"><!ENTITY b "deep">]><root>&a;</root>)
       doc = KXML.parse(source)
-      doc.root.not_nil!.text_content.should eq("deep")
+      assert_equal "deep", doc.root.not_nil!.text_content
     end
 
     it "treats undeclared references after parameter entities as validity errors" do
       source = %(<!DOCTYPE foo [<!ENTITY % pe "<!ENTITY ent1 'text'>">%pe;]><foo>&ent2;</foo>)
       doc = KXML.parse(source)
-      doc.root.not_nil!.text_content.should eq("")
+      assert_equal "", doc.root.not_nil!.text_content
     end
 
     it "allows a bypassed reference to an undeclared entity inside an entity value" do
       # Bypassed: left as-is; only expanded if the outer entity is used
       source = %(<!DOCTYPE root [<!ENTITY e "&nope;">]><root>&e;</root>)
-      ex = expect_raises KXML::Error do
+      ex = assert_raises KXML::Error do
         KXML.parse(source)
       end
-      ex.message.not_nil!.should contain("'nope' is not declared")
+      assert_includes ex.message.not_nil!, "'nope' is not declared"
     end
 
     it "rejects a literal '<' produced by an entity in an attribute value" do
       source = %(<!DOCTYPE root [<!ENTITY x "&#60;">]><root a="&x;"/>)
-      ex = expect_raises KXML::Error do
+      ex = assert_raises KXML::Error do
         KXML.parse(source)
       end
-      ex.message.not_nil!.should contain("'<'")
+      assert_includes ex.message.not_nil!, "'<'"
     end
 
     it "rejects the 4.4.5 non-well-formed attribute example" do
       source = %(<!DOCTYPE root [<!ENTITY EndAttr "27'">]><root a='a-&EndAttr;>')
-      expect_raises KXML::Error do
+      assert_raises KXML::Error do
         KXML.parse(source)
       end
     end
 
     it "rejects undeclared parameter entities in entity values" do
       source = %(<!DOCTYPE root [<!ENTITY e "%pe;">]><root/>)
-      ex = expect_raises KXML::Error do
+      ex = assert_raises KXML::Error do
         KXML.parse(source)
       end
-      ex.message.not_nil!.should contain("parameter entity references cannot occur")
+      assert_includes ex.message.not_nil!, "parameter entity references cannot occur"
     end
 
     it "rejects references to external entities in content" do
       source = %(<!DOCTYPE root [<!ENTITY e SYSTEM "x.ent">]><root>&e;</root>)
-      ex = expect_raises KXML::Error do
+      ex = assert_raises KXML::Error do
         KXML.parse(source)
       end
-      ex.message.not_nil!.should contain("external")
+      assert_includes ex.message.not_nil!, "external"
     end
 
     it "rejects external entity references in attribute values" do
       source = %(<!DOCTYPE root [<!ENTITY e SYSTEM "x.ent">]><root a="&e;"/>)
-      ex = expect_raises KXML::Error do
+      ex = assert_raises KXML::Error do
         KXML.parse(source)
       end
-      ex.message.not_nil!.should contain("external")
+      assert_includes ex.message.not_nil!, "external"
     end
 
     it "rejects references to unparsed entities in content" do
       source = %(<!DOCTYPE root [<!ENTITY e SYSTEM "x.png" NDATA png><!NOTATION png SYSTEM "png.exe">]><root>&e;</root>)
-      ex = expect_raises KXML::Error do
+      ex = assert_raises KXML::Error do
         KXML.parse(source)
       end
-      ex.message.not_nil!.should contain("external")
+      assert_includes ex.message.not_nil!, "external"
     end
 
     it "enforces the entity expansion depth limit" do
@@ -163,15 +163,15 @@ describe KXML::Parser do
         end
       end
       source = %(<!DOCTYPE root [#{decls}]><root>&e0;</root>)
-      ex = expect_raises KXML::Error do
+      ex = assert_raises KXML::Error do
         KXML.parse(source)
       end
-      ex.message.not_nil!.should contain("nested too deeply")
+      assert_includes ex.message.not_nil!, "nested too deeply"
     end
 
     it "rejects unterminated entity values" do
       source = %(<!DOCTYPE root [<!ENTITY e "oops>]><root/>)
-      expect_raises KXML::Error do
+      assert_raises KXML::Error do
         KXML.parse(source)
       end
     end

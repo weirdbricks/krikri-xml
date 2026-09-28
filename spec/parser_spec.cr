@@ -4,74 +4,74 @@ describe KXML::Parser do
   describe "basic documents" do
     it "parses a simple document" do
       doc = KXML.parse(%(<root><child>hello</child></root>))
-      root = doc.root.should_not be_nil
-      root.name.should eq("root")
+      root = doc.root.not_nil!
+      assert_equal "root", root.name
       children = root.elements
-      children.size.should eq(1)
-      children[0].name.should eq("child")
-      children[0].text_content.should eq("hello")
+      assert_equal 1, children.size
+      assert_equal "child", children[0].name
+      assert_equal "hello", children[0].text_content
     end
 
     it "parses empty-element tags" do
       doc = KXML.parse(%(<root><a/><b /></root>))
-      root = doc.root.should_not be_nil
-      root.elements.size.should eq(2)
-      root.elements[0].children.should be_empty
-      root.elements[1].children.should be_empty
+      root = doc.root.not_nil!
+      assert_equal 2, root.elements.size
+      assert_empty root.elements[0].children
+      assert_empty root.elements[1].children
     end
 
     it "merges adjacent text nodes" do
       doc = KXML.parse(%(<root>ab<![CDATA[c]]>d</root>))
-      root = doc.root.should_not be_nil
+      root = doc.root.not_nil!
       texts = root.children.select(KXML::Text)
-      texts.size.should eq(2)
-      texts[0].content.should eq("ab")
-      texts[1].content.should eq("d")
+      assert_equal 2, texts.size
+      assert_equal "ab", texts[0].content
+      assert_equal "d", texts[1].content
       cdatas = root.children.select(KXML::CData)
-      cdatas.size.should eq(1)
-      cdatas[0].content.should eq("c")
+      assert_equal 1, cdatas.size
+      assert_equal "c", cdatas[0].content
     end
 
     it "preserves whitespace in text" do
       doc = KXML.parse(%(<root>  spaced\tout  </root>))
-      root = doc.root.should_not be_nil
-      root.text_content.should eq("  spaced\tout  ")
+      root = doc.root.not_nil!
+      assert_equal "  spaced\tout  ", root.text_content
     end
 
     it "parses attributes in both quote styles" do
       doc = KXML.parse(%(<root a="1" b='2' />))
-      root = doc.root.should_not be_nil
-      root["a"].should eq("1")
-      root["b"].should eq("2")
+      root = doc.root.not_nil!
+      assert_equal "1", root["a"]
+      assert_equal "2", root["b"]
     end
 
     it "allows '>' raw in text and attribute values" do
       doc = KXML.parse(%(<root a="x>y">b>c</root>))
-      root = doc.root.should_not be_nil
-      root["a"].should eq("x>y")
-      root.text_content.should eq("b>c")
+      root = doc.root.not_nil!
+      assert_equal "x>y", root["a"]
+      assert_equal "b>c", root.text_content
     end
 
     it "collects prolog and epilog comments and PIs" do
       doc = KXML.parse(%(<!--before--><?pi one?><!--mid--><root/><!--after-->))
-      doc.misc_before.size.should eq(3)
-      doc.misc_after.size.should eq(1)
-      pi = doc.misc_before[1].should be_a(KXML::ProcessingInstruction)
-      pi.target.should eq("pi")
-      pi.content.should eq("one")
+      assert_equal 3, doc.misc_before.size
+      assert_equal 1, doc.misc_after.size
+      pi = doc.misc_before[1].as(KXML::ProcessingInstruction)
+      assert_equal "pi", pi.target
+      assert_equal "one", pi.content
     end
 
     it "parses comments and PIs inside content" do
       doc = KXML.parse(%(<root><!--c--><?p data?><!--d--></root>))
-      root = doc.root.should_not be_nil
-      root.children.size.should eq(3)
-      root.children[0].as(KXML::Comment).content.should eq("c")
-      root.children[2].as(KXML::Comment).content.should eq("d")
+      root = doc.root.not_nil!
+      assert_equal 3, root.children.size
+      assert_equal "c", root.children[0].as(KXML::Comment).content
+      assert_equal "d", root.children[2].as(KXML::Comment).content
     end
 
     it "accepts '-->' terminators but rejects content ending with a lone dash" do
       doc = KXML.parse(%(<root><!-- a --></root>))
-      doc.root.not_nil!.children[0].as(KXML::Comment).content.should eq(" a ")
+      assert_equal " a ", doc.root.not_nil!.children[0].as(KXML::Comment).content
       # A comment ending with three dashes is not well-formed (Clark
       # xmltest not-wf-sa-070): the trailing '-' cannot fit the grammar.
       expect_error(%(<!--a---><doc/>), "comment")
@@ -79,19 +79,19 @@ describe KXML::Parser do
 
     it "handles ']]' inside CDATA sections" do
       doc = KXML.parse(%(<root><![CDATA[a]]]b]]></root>))
-      root = doc.root.should_not be_nil
-      root.children[0].as(KXML::CData).content.should eq("a]]]b")
+      root = doc.root.not_nil!
+      assert_equal "a]]]b", root.children[0].as(KXML::CData).content
     end
 
     it "normalizes CRLF and lone CR line breaks" do
       doc = KXML.parse("<root>a\r\nb\rc\nd</root>")
-      root = doc.root.should_not be_nil
-      root.text_content.should eq("a\nb\nc\nd")
+      root = doc.root.not_nil!
+      assert_equal "a\nb\nc\nd", root.text_content
     end
 
     it "skips a leading byte order mark" do
       doc = KXML.parse("\u{FEFF}<root/>")
-      doc.root.should_not be_nil
+      refute_nil doc.root
     end
 
     it "rejects encodings incompatible with the document input" do
@@ -101,29 +101,29 @@ describe KXML::Parser do
 
     it "parses a document with a DOCTYPE and no subset" do
       doc = KXML.parse(%(<!DOCTYPE root SYSTEM "doc.dtd"><root/>))
-      dt = doc.doctype.should_not be_nil
-      dt.name.should eq("root")
-      dt.system_id.should eq("doc.dtd")
-      dt.public_id.should be_nil
+      dt = doc.doctype.not_nil!
+      assert_equal "root", dt.name
+      assert_equal "doc.dtd", dt.system_id
+      assert_nil dt.public_id
     end
 
     it "parses a PUBLIC doctype" do
       doc = KXML.parse(%(<!DOCTYPE root PUBLIC "pub-id" "sys-id"><root/>))
-      dt = doc.doctype.should_not be_nil
-      dt.public_id.should eq("pub-id")
-      dt.system_id.should eq("sys-id")
+      dt = doc.doctype.not_nil!
+      assert_equal "pub-id", dt.public_id
+      assert_equal "sys-id", dt.system_id
     end
 
     it "round-trips through to_xml" do
       source = %(<root a="1&amp;2"><b>x</b><c/><!--z--></root>)
       doc = KXML.parse(source)
-      doc.to_xml.should eq(%(<root a="1&amp;2"><b>x</b><c/><!--z--></root>))
+      assert_equal %(<root a="1&amp;2"><b>x</b><c/><!--z--></root>), doc.to_xml
     end
 
     it "exposes namespace URI on xml: attributes" do
       doc = KXML.parse(%(<root xml:lang="en"/>))
-      a = doc.root.not_nil!.attribute("xml:lang").should_not be_nil
-      a.namespace_uri.should eq(KXML::XML_NAMESPACE_URI)
+      a = doc.root.not_nil!.attribute("xml:lang").not_nil!
+      assert_equal KXML::XML_NAMESPACE_URI, a.namespace_uri
     end
 
     it "handles multibyte characters in text across entity expansions" do
@@ -131,15 +131,15 @@ describe KXML::Parser do
       # decode silently dropped characters after any multibyte char.
       source = %(<!DOCTYPE root [<!ENTITY pub "&#xc9;ditions">]><root>&pub; suite</root>)
       doc = KXML.parse(source)
-      doc.root.not_nil!.text_content.should eq("\u{C9}ditions suite")
+      assert_equal "\u{C9}ditions suite", doc.root.not_nil!.text_content
     end
 
     it "handles multibyte characters in attribute values and defaults" do
       source = %(<!DOCTYPE root [<!ATTLIST root a CDATA "caf\u{E9}">]><root b="na\u{EF}ve"/>)
       doc = KXML.parse(source)
       root = doc.root.not_nil!
-      root["b"].should eq("na\u{EF}ve")
-      root["a"].should eq("caf\u{E9}")
+      assert_equal "na\u{EF}ve", root["b"]
+      assert_equal "caf\u{E9}", root["a"]
     end
   end
 
@@ -233,7 +233,7 @@ describe KXML::Parser do
     it "rejects ']]>' split across CDATA sections is fine but not in one" do
       # ']]' then ']]>' forms the terminator for the first section
       doc = KXML.parse(%(<root><![CDATA[a]]]]><![CDATA[b]]></root>))
-      doc.root.not_nil!.children[0].as(KXML::CData).content.should eq("a]]")
+      assert_equal "a]]", doc.root.not_nil!.children[0].as(KXML::CData).content
     end
 
     it "rejects '<!' in content" do
@@ -267,7 +267,7 @@ describe KXML::Parser do
 
     it "accepts any 1.x XML version but rejects others" do
       doc = KXML.parse(%(<?xml version="1.1"?><root/>))
-      doc.root.should_not be_nil
+      refute_nil doc.root
       expect_error(%(<?xml version="2.0"?><root/>), "unsupported XML version")
     end
 

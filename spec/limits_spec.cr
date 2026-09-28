@@ -1,4 +1,3 @@
-require "spec"
 require "./spec_helper"
 
 # Boundary tests for the parser's resource limits: each configurable
@@ -19,7 +18,7 @@ end
 describe "resource limits" do
   it "accepts entity nesting exactly at MAX_ENTITY_DEPTH" do
     doc = KXML.parse(entity_chain(KXML::Parser::MAX_ENTITY_DEPTH))
-    doc.root.not_nil!.text_content.should eq("x")
+    assert_equal "x", doc.root.not_nil!.text_content
   end
 
   it "rejects entity nesting one past MAX_ENTITY_DEPTH" do
@@ -32,7 +31,7 @@ describe "resource limits" do
     # walk to the innermost element
     e = doc.root.not_nil!
     (n - 1).times { e = e.elements[0] }
-    e.name.should eq("d")
+    assert_equal "d", e.name
   end
 
   it "rejects element nesting one past MAX_ELEMENT_DEPTH" do
@@ -69,12 +68,12 @@ describe "resource limits" do
     d = decls.to_s
     r = refs.to_s
     doc = KXML.parse(%(<!DOCTYPE r [#{d}]><r>#{r}</r>))
-    doc.root.not_nil!.text_content.bytesize.should eq(chunk.bytesize * count)
+    assert_equal chunk.bytesize * count, doc.root.not_nil!.text_content.bytesize
   end
 
   it "reports positions on limit violations, not internal errors" do
     ex = expect_error("<d>" * (KXML::Parser::MAX_ELEMENT_DEPTH + 1) + "</d>" * (KXML::Parser::MAX_ELEMENT_DEPTH + 1))
-    ex.message.not_nil!.should contain("depth")
-    ex.line.should be > 0
+    assert_includes ex.message.not_nil!, "depth"
+    assert ex.line > 0
   end
 end

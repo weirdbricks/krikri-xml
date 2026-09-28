@@ -1,4 +1,3 @@
-require "spec"
 require "./spec_helper"
 require "xml/dom/parser"
 require "compress/zip"
@@ -11,6 +10,21 @@ require "compress/zip"
 # DOMs represent.
 
 DIFF_REALWORLD_DIR = File.expand_path("../testdata/realworld", __DIR__)
+
+# The real-world files are enumerated at compile time because minitest's
+# `it` generates test methods, so the directory cannot be walked at
+# runtime to register tests. The first generated test asserts that this
+# list stays in sync with the directory.
+REALWORLD_FILES = [
+  "android-layout.xml",
+  "ant-build.xml",
+  "atom-microsoft.xml",
+  "docbook.xsl",
+  "github.svg",
+  "maven-pom.xml",
+  "programming.opml",
+  "rss-nasa.xml",
+]
 
 private def kxml_walk(b : String::Builder, n : KXML::Node, depth : Int32) : Nil
   case n
@@ -133,18 +147,24 @@ FIXTURES = [
 ]
 
 describe "differential parsing (KXML vs XML::DOM)" do
-  Dir.glob("#{DIFF_REALWORLD_DIR}/*").sort.each do |path|
-    it "agrees with XML::DOM on #{File.basename(path)}" do
-      source = File.read(path)
-      kxml_signature(source).should eq(dom_signature(source))
+  {% for file, i in REALWORLD_FILES %}
+    it {{ "agrees with XML::DOM on " + file }} do
+      {% if i == 0 %}
+        # Guard: a file added to testdata/realworld must also be listed in
+        # REALWORLD_FILES above, or it silently loses differential coverage.
+        assert_equal REALWORLD_FILES, Dir.glob("#{DIFF_REALWORLD_DIR}/*").sort.map { |p| File.basename(p) }
+      {% end %}
+      source = File.read(File.join(DIFF_REALWORLD_DIR, {{ file }}))
+      assert_equal dom_signature(source), kxml_signature(source)
     end
-  end
+  {% end %}
 
-  FIXTURES.each_with_index do |source, i|
-    it "agrees with XML::DOM on fixture ##{i}" do
-      kxml_signature(source).should eq(dom_signature(source))
+  {% for fixture, i in FIXTURES %}
+    it {{ "agrees with XML::DOM on fixture " + i.stringify }} do
+      source = FIXTURES[{{ i }}]
+      assert_equal dom_signature(source), kxml_signature(source)
     end
-  end
+  {% end %}
 
   it "agrees on every well-formed conformance-suite case it can read" do
     # Drive the vendored W3C suite's "valid" cases through both parsers.
@@ -177,8 +197,8 @@ describe "differential parsing (KXML vs XML::DOM)" do
         compared += 1
         disagreements << "#{test["ID"]} (#{uri})" if k != d
       end
-      compared.should be > 100
-      disagreements.should eq([] of String)
+      assert compared > 100
+      assert_equal [] of String, disagreements
     end
   end
 end

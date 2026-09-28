@@ -1,4 +1,3 @@
-require "spec"
 require "compress/zip"
 require "./spec_helper"
 
@@ -185,32 +184,35 @@ def known_divergence?(entry : String) : Bool
   KNOWN_DIVERGENCES.has_key?(id)
 end
 
-results = run_suite
-divergent = results.unexpected.select { |entry| known_divergence?(entry) }
-unexplained = results.unexpected.reject { |entry| known_divergence?(entry) }
+# The suite runs once at startup; the results are shared by the tests
+# below as constants (minitest `it` bodies are methods and cannot close
+# over top-level locals).
+RESULTS     = run_suite
+DIVERGENT   = RESULTS.unexpected.select { |entry| known_divergence?(entry) }
+UNEXPLAINED = RESULTS.unexpected.reject { |entry| known_divergence?(entry) }
 
 describe "W3C XML conformance suite" do
   it "accepts every well-formed case and rejects every not-wf case" do
-    unless unexplained.empty?
-      fail("unexpected results:\n" + unexplained[0...30].join("\n"))
+    unless UNEXPLAINED.empty?
+      flunk("unexpected results:\n" + UNEXPLAINED[0...30].join("\n"))
     end
   end
 
   it "diverges only on the documented known-divergence cases" do
-    div_ids = divergent.map(&.split(" ")[0].chomp(".xml")).to_set
+    div_ids = DIVERGENT.map(&.split(" ")[0].chomp(".xml")).to_set
     missing = KNOWN_DIVERGENCES.keys.reject { |k| div_ids.includes?(k) }
     unless missing.empty?
-      fail("documented divergences no longer failing (they pass now): " + missing.join(", "))
+      flunk("documented divergences no longer failing (they pass now): " + missing.join(", "))
     end
-    (divergent.any? { |entry| entry.split(" ")[0] =~ PITARGET_4ED }).should be_true
+    assert DIVERGENT.any? { |entry| entry.split(" ")[0] =~ PITARGET_4ED }
   end
 
   it "executes a substantial number of cases" do
-    results.passed.should be > 1000
+    assert RESULTS.passed > 1000
   end
 
   it "skips only external-entity and encoding-limited cases" do
     # Sanity bound: skips must stay a minority of all catalog entries.
-    results.skipped.size.should be < 700
+    assert RESULTS.skipped.size < 700
   end
 end
