@@ -16,6 +16,8 @@ etc.) and do not consult their behavior as authority; the spec decides.
 
 ```sh
 crystal spec                          # full test suite (the only required check)
+just test                             # same suite, 4 real OS threads (minitest --parallel)
+just test-serial                      # single-threaded run; use to bisect parallel-run failures
 crystal spec spec/xpath_spec.cr       # single spec file
 shards install                        # needed once before ameba
 crystal lib/ameba/bin/ameba.cr        # lint (ameba is not on PATH)
@@ -122,11 +124,27 @@ Key invariants:
 
 ## Testing conventions
 
-- Specs in `spec/`, plain Crystal spec DSL, one file per feature area
-  (parser, entities, doctype, namespaces, normalization, mutation, xpath,
-  conformance).
+- Specs in `spec/`, minitest.cr (`github: ysbaddaden/minitest.cr`) with its
+  `describe`/`it` DSL, one file per feature area (parser, entities, doctype,
+  namespaces, normalization, mutation, xpath, conformance).
+- minitest `it` blocks compile to real generated test-class *methods*, not
+  closures: they cannot close over locals set up in the enclosing
+  `describe` body, and tests cannot be registered from runtime loops.
+  Data-driven specs (xpath_corpus, realworld, differential) therefore
+  iterate their tables with compile-time `{% for %}` macro loops over
+  literal constants; keep that shape when adding rows or files.
+- Assertion-using helpers live in the `SpecHelpers` module (included into
+  `Minitest::Spec` by `spec_helper.cr`) rather than as top-level defs,
+  because top-level defs cannot call `assert_*`.
 - `spec/spec_helper.cr` provides `expect_error(source, message)` returning
-  the raised `KXML::Error` - use it rather than raw `expect_raises`.
+  the raised `KXML::Error` - use it rather than raw `assert_raises`.
+- The suite runs under real OS threads (`just test` = `-Dpreview_mt`
+  plus `--parallel 4`). Any new class-level (`@@`) or otherwise shared
+  mutable state in `src/` must be thread-safe: use `Atomic` for plain
+  counters (see `Element.next_clark_number`), `Mutex`/`Sync::RWLock` for
+  mutated-and-read structures. Per-`Document` state (including
+  `doc_order` and the dirty/renumber protocol) is instance-level and safe
+  as long as each document is used by one thread at a time.
 - **The conformance suite's failures are load-bearing.**
   `spec/conformance_spec.cr` has a `KNOWN_DIVERGENCES` hash mapping test IDs
   to documented reasons, plus assertions that (a) no *unexplained* failure

@@ -5,3 +5,4 @@
 *.dwarf
 /krikri-xml
 /nodes
+/.crystal-build-cache/
