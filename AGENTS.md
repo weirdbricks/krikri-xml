@@ -26,7 +26,7 @@ crystal run bench/bench.cr --release  # benchmark vs ysbaddaden/xml.cr
 ```
 
 CI (`.github/workflows/ci.yml`) runs only `crystal spec` on
-`crystallang/crystal:1.21.0-alpine`. Crystal `>= 1.10.0` per `shard.yml`.
+`crystallang/crystal:1.22.0-alpine`. Crystal `>= 1.10.0` per `shard.yml`.
 
 The conformance spec (`spec/conformance_spec.cr`) reads
 `testdata/xmlts20130923.zip` (the W3C XML Conformance Test Suite, vendored,
