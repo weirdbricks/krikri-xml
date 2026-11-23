@@ -1,8 +1,21 @@
 # krikri-xml
 
-A clean-room XML 1.0 (Fifth Edition) parser in pure Crystal. **No C
-dependencies** - the stdlib `xml` module links libxml2; this shard does not
-link any native library at all.
+A clean-room XML 1.0 (Fifth Edition) parser and XPath 1.0 evaluator in pure
+Crystal. **No C dependencies** - the stdlib `xml` module links libxml2; this
+shard does not link any native library at all.
+
+## Installation
+
+Add the shard to your `shard.yml`:
+
+```yaml
+dependencies:
+  krikri-xml:
+    github: weirdbricks/krikri-xml
+    version: "~> 1.0"
+```
+
+Then run `shards install` and `require "krikri-xml"`.
 
 ## Provenance
 
@@ -43,12 +56,12 @@ reference.
   no-namespace nodes (the default `xmlns` declaration is not used); pass
   an explicit `ns_map` to resolve expression prefixes.
 
-Not implemented (yet):
+Deliberately out of scope:
 
 - External entity / external subset fetching (references to external
-  entities are recognized and rejected - deliberate, since krikri's use is
-  offline).
-- Serializer fidelity to libxml2/lxml byte output (the current serializer is
+  entities are recognized and rejected, since krikri is meant for offline
+  use).
+- Byte-identical serializer output with libxml2/lxml (the serializer is
   spec-shaped, not libxml2-shaped).
 
 ## Usage
@@ -65,6 +78,9 @@ rescue e : KXML::Error
   e.line   # line number of the violation
   e.column # column of the violation
 end
+
+nodes = KXML::XPath.evaluate_nodes("//child[@a]", doc.root.not_nil!)
+nodes.size # => 1
 ```
 
 ## Deliberate parser policies
@@ -108,16 +124,14 @@ IBM, Edinburgh errata-2e/3e/4e, Richard Tobin's Namespaces 1.0 + errata):
 ## Development
 
 ```sh
-crystal spec
+crystal spec        # full suite
+just test           # suite across 4 OS threads (minitest --parallel)
+just test-serial    # single-threaded, to bisect parallel-run failures
+crystal tool format src spec
 ```
 
-The specs are organized one file per feature area (`spec/parser_spec.cr`,
-`entities_spec.cr`, `doctype_spec.cr`, `namespaces_spec.cr`,
-`normalization_spec.cr`, `mutation_spec.cr`, `doc_order_spec.cr`,
-`limits_spec.cr`,
-`fuzz_spec.cr`, `realworld_spec.cr`, `roundtrip_spec.cr`, `differential_spec.cr`,
-`xpath_spec.cr`, and `xpath_corpus_spec.cr`), plus the W3C conformance suite
-(`spec/conformance_spec.cr`), which reads
-`testdata/xmlts20130923.zip` and runs every case whose expectations this
-parser can honestly check - roughly 2,000 additional cases on top of the unit
-specs.
+The unit specs are organized one file per feature area (parser, entities,
+doctype, namespaces, normalization, mutation, document order, limits,
+fuzzing, round-trip, differential, and XPath). The W3C conformance suite
+(`spec/conformance_spec.cr`) reads `testdata/xmlts20130923.zip` and runs
+roughly 2,000 additional cases on top of the unit specs.

@@ -23,10 +23,13 @@ shards install                        # needed once before ameba
 crystal lib/ameba/bin/ameba.cr        # lint (ameba is not on PATH)
 crystal tool format src spec          # formatter; run before committing
 crystal run bench/bench.cr --release  # benchmark vs ysbaddaden/xml.cr
+crystal run bench/opt_bench.cr        # CI smoke benchmark (asserts correctness)
 ```
 
-CI (`.github/workflows/ci.yml`) runs only `crystal spec` on
-`crystallang/crystal:1.22.0-alpine`. Crystal `>= 1.10.0` per `shard.yml`.
+CI (`.github/workflows/ci.yml`) runs `crystal spec` plus the `bench/opt_bench.cr`
+smoke benchmark on `crystallang/crystal:1.22.0-alpine`. Crystal `>= 1.10.0` per
+`shard.yml`. Pushing a `v*` tag whose version matches `shard.yml` creates the
+GitHub release via `.github/workflows/release.yml`.
 
 The conformance spec (`spec/conformance_spec.cr`) reads
 `testdata/xmlts20130923.zip` (the W3C XML Conformance Test Suite, vendored,
@@ -95,17 +98,18 @@ Key invariants:
   `KXML::Error` (which carries `line`, `column`, `context`). There is no
   recovery mode and none should be added.
 - **Namespaces are always enforced** (NS-aware reading), even in tests where
-  the W3C suite disagrees; see "known divergences" below.
+  the W3C suite disagrees; the divergences are enumerated in
+  `KNOWN_DIVERGENCES` in `spec/conformance_spec.cr`.
 
 ## Deliberate policies (do not "fix" these)
 
-- As of commit `ae47898`, the formerly deliberate XPath limitations were
-  closed: variable references resolve via the optional `vars` binding map on
-  `XPath.evaluate`, the namespace axis works via synthesized `NamespaceNode`s
-  built from the context element's in-scope bindings (string-value is the
-  URI), and `id()` resolves tokens through `Document#id_attribute_names`
-  (ATTLIST `type="ID"` declarations recorded during parse). Update the README
-  status section if behavior changes again.
+- The formerly deliberate XPath limitations are closed: variable references
+  resolve via the optional `vars` binding map on `XPath.evaluate`, the
+  namespace axis works via synthesized `NamespaceNode`s built from the context
+  element's in-scope bindings (string-value is the URI), and `id()` resolves
+  tokens through `Document#id_attribute_names` (ATTLIST `type="ID"`
+  declarations recorded during parse). Update the README status section if
+  behavior changes again.
 - External entity / external subset fetching is deliberately unsupported
   (offline use); references to external entities are recognized and rejected.
 - Parser limits as configurable constants on `KXML::Parser`:
@@ -124,9 +128,10 @@ Key invariants:
 
 ## Testing conventions
 
-- Specs in `spec/`, minitest.cr (`github: ysbaddaden/minitest.cr`) with its
-  `describe`/`it` DSL, one file per feature area (parser, entities, doctype,
-  namespaces, normalization, mutation, xpath, conformance).
+- Specs in `spec/`, minitest.cr (the `weirdbricks/minitest.cr` fork pinned in
+  `shard.yml`) with its `describe`/`it` DSL, one file per feature area
+  (parser, entities, doctype, namespaces, normalization, mutation, xpath,
+  conformance).
 - minitest `it` blocks compile to real generated test-class *methods*, not
   closures: they cannot close over locals set up in the enclosing
   `describe` body, and tests cannot be registered from runtime loops.
@@ -187,5 +192,3 @@ Ameba exceptions are deliberate and commented:
   `xmlSearchNsByHref`/`xmlNewNs` behavior).
 - `spec_helper.cr` only requires the shard source; the conformance spec
   additionally requires `compress/zip` from the stdlib.
-- A stray compiled binary at repo root (`krikri-xml`) is gitignored - do not
-  track it.

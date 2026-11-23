@@ -1,4 +1,4 @@
-# Focused benchmark for the DEEPSEEK.md optimizations.
+# Focused benchmark for the parser, serializer, mutation, and XPath hot paths.
 #
 # Run with:
 #   crystal run bench/opt_bench.cr --release
